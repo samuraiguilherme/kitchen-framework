@@ -561,12 +561,19 @@ describe("station workflow", () => {
       await setup.kitchen.run("answer", station);
       await setup.kitchen.approve("answer", station, { actor: "chef" });
     }
-    git(setup.root, 'remote', 'set-url', '--push', 'origin', 'https://example.invalid/HireBus/hirebus-v3.git');
-    await setup.kitchen.publish('answer', { preview: true });
-    await setup.kitchen.approve('answer', 'publish', { actor: 'chef' });
-    await expect(setup.kitchen.publish('answer')).rejects.toThrow(/origin/i);
+    git(
+      setup.root,
+      "remote",
+      "set-url",
+      "--push",
+      "origin",
+      "https://example.invalid/HireBus/hirebus-v3.git",
+    );
+    await setup.kitchen.publish("answer", { preview: true });
+    await setup.kitchen.approve("answer", "publish", { actor: "chef" });
+    await expect(setup.kitchen.publish("answer")).rejects.toThrow(/origin/i);
     expect(setup.counts()).toEqual({ created: 0, pushed: 0 });
-    git(setup.root, 'remote', 'set-url', '--push', 'origin', setup.remote);
+    git(setup.root, "remote", "set-url", "--push", "origin", setup.remote);
     const file = path.join(setup.root, "kitchen.config.json");
     const config = JSON.parse(readFileSync(file, "utf8"));
     config.github.account = "another-person";

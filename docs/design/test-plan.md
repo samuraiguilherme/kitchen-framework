@@ -2,17 +2,17 @@
 
 ## Acceptance coverage
 
-| AC   | Verification                                                                                                        |
-| ---- | ------------------------------------------------------------------------------------------------------------------- |
-| AC-1 | workflow temporary Git repo, pinned ref, isolated branch/worktree, original source unchanged                        |
-| AC-2 | provider JSON/schema failures, literal Windows arguments/paths, fake Codex/Claude executables, timeout and abort    |
-| AC-3 | document headings/criteria, guided questions, frontmatter non-authority, gates and stale upstream artifacts         |
-| AC-4 | assertion RED vs infrastructure, preservation GREEN, zero tests, pinned baseline and tests-first commit             |
-| AC-5 | manual test weakening, atomic rejection of author rewrites, scaffold implementation and requirement-based revisions |
-| AC-6 | required GREEN failures, local fixture gaps, observed evidence, dedicated preview preserving an existing service    |
-| AC-7 | explicit draft arguments/body file, preview without remote writes, candidate drift and create-response recovery     |
-| AC-8 | proposed-label non-measurement and human-label calibration counts                                                   |
-| AC-9 | dead-process recovery, concurrent locks, provider-failed restart, finite profile validation and doctor              |
+| AC   | Verification                                                                                                                                               |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| AC-1 | workflow temporary Git repo, pinned ref, isolated branch/worktree, original source unchanged                                                               |
+| AC-2 | provider JSON/schema failures, literal Windows arguments/paths, fake Codex/Claude executables, timeout and abort                                           |
+| AC-3 | document headings/criteria, guided questions, frontmatter non-authority, gates and stale upstream artifacts                                                |
+| AC-4 | assertion RED vs infrastructure, preservation GREEN, zero tests, pinned baseline and tests-first commit                                                    |
+| AC-5 | manual test weakening, atomic rejection of author rewrites, scaffold implementation and requirement-based revisions                                        |
+| AC-6 | required GREEN failures, local fixture gaps, observed evidence, dedicated preview preserving an existing service                                           |
+| AC-7 | explicit draft arguments/body file, preview without remote writes, candidate/base/identity drift, separate push URL rejection and create-response recovery |
+| AC-8 | proposed-label non-measurement and human-label calibration counts                                                                                          |
+| AC-9 | dead-process recovery, concurrent locks, provider-failed restart, finite profile validation and doctor                                                     |
 
 ## Unit tests
 

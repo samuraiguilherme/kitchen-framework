@@ -992,21 +992,55 @@ export class Kitchen {
       if (digest(state.worktree, [file]) !== expected)
         throw new Error("Approved test integrity changed.");
     if (remote) {
-      const remoteUrl = await git(this.root, "remote", "get-url", "origin");
-      const normalized = remoteUrl.replaceAll("\\", "/").replace(/\.git$/, "");
-      const repository = normalized.match(/(?:[:/])([^/]+\/[^/]+)$/)?.[1];
-      if (!config.github.repository || repository !== config.github.repository)
-        throw new Error("Configured GitHub repository does not match origin.");
-      if (!(this.allowFixtureRemote && existsSync(remoteUrl))) {
-        let host: string | undefined;
-        if (remoteUrl.startsWith("https://") || remoteUrl.startsWith("ssh://"))
-          host = new URL(remoteUrl).hostname;
-        else host = remoteUrl.match(/^(?:[^@]+@)?([^:/]+):/)?.[1];
-        if (!host) throw new Error("Origin must target GitHub.");
-        if (host !== "github.com") {
-          const sshConfig = await execute("ssh", ["-G", host], this.root);
-          if (!/^hostname github\.com\s*$/m.test(sshConfig))
-            throw new Error("Origin SSH alias does not resolve to github.com.");
+      const remoteUrls = [
+        ...new Set([
+          ...(
+            await git(this.root, "remote", "get-url", "--all", "origin")
+          ).split(/\r?\n/),
+          ...(
+            await git(
+              this.root,
+              "remote",
+              "get-url",
+              "--push",
+              "--all",
+              "origin",
+            )
+          ).split(/\r?\n/),
+        ]),
+      ];
+      for (const remoteUrl of remoteUrls) {
+        const normalized = remoteUrl
+          .replaceAll("\\", "/")
+          .replace(/\.git$/, "");
+        const repository = normalized.match(/(?:[:/])([^/]+\/[^/]+)$/)?.[1];
+        if (
+          !config.github.repository ||
+          repository !== config.github.repository
+        )
+          throw new Error(
+            "Configured GitHub repository does not match origin.",
+          );
+        if (!(this.allowFixtureRemote && existsSync(remoteUrl))) {
+          let host: string | undefined;
+          if (
+            remoteUrl.startsWith("https://") ||
+            remoteUrl.startsWith("ssh://")
+          )
+            host = new URL(remoteUrl).hostname;
+          else host = remoteUrl.match(/^(?:[^@]+@)?([^:/]+):/)?.[1];
+          if (!host) throw new Error("Origin must target GitHub.");
+          if (host !== "github.com") {
+            if (remoteUrl.startsWith("https://"))
+              throw new Error(
+                "Origin push/fetch destination must be github.com.",
+              );
+            const sshConfig = await execute("ssh", ["-G", host], this.root);
+            if (!/^hostname github\.com\s*$/m.test(sshConfig))
+              throw new Error(
+                "Origin SSH alias does not resolve to github.com.",
+              );
+          }
         }
       }
       const remoteBase = (

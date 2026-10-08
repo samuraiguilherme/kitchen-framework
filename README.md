@@ -157,7 +157,7 @@ Label JSON maps IDs such as `spec-acceptable` and `spec-flawed` to `acceptable` 
 
 Ctrl+C cancels owned provider/check subprocess trees. Finite timeouts prevent unattended hangs. Per-feature process locks reject concurrent mutations; the next command recovers a dead process's running station as failed, requiring a rerun. Provider/schema failures remain inspectable and retryable. Raw local files are trusted operator storage, not an access-control boundary.
 
-Publication rechecks source, accepted tests, branch, local/remote base, origin target and intended GitHub identity. It uses a body file and explicit repository/base/head. No force pushes. A remote/base reconciliation that changes the candidate requires renewed approvals and verification. Retrying after an unknown create result recovers an existing open PR before creating another.
+Publication rechecks source, accepted tests, branch, local/remote base, every origin fetch/push destination and intended GitHub identity. It uses a body file and explicit repository/base/head. No force pushes. A remote/base reconciliation that changes the candidate requires renewed approvals and verification. Retrying after an unknown create result recovers an existing open PR before creating another.
 
 ## Validate the framework
 
