@@ -1,0 +1,24 @@
+{
+  "name": "@hirebus/kitchen",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "cli": "tsx src/cli.ts",
+    "test": "vitest run",
+    "check:types": "tsc --noEmit",
+    "lint": "pnpm exec oxlint -c ../../.oxlintrc.json ."
+  },
+  "dependencies": {
+    "ajv": "8.18.0",
+    "cross-spawn": "7.0.6",
+    "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "@types/cross-spawn": "6.0.6",
+    "@types/node": "22.19.15",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
+  }
+}
