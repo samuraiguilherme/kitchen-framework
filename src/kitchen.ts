@@ -14,6 +14,7 @@ import {
   gateReady,
   hash,
   lintDocument,
+  requireAwaitingApproval,
   rubricVersion,
   safePath,
   stationOrder,
@@ -328,6 +329,40 @@ export class Kitchen {
         throw new Error(
           "Revising accepted tests requires a human explanation referencing the affected AC-n requirement.",
         );
+      const pending = state.stations[station];
+      if (
+        pending?.status === "awaiting-input" &&
+        pending.output &&
+        pending.output.questions.length &&
+        !options.feedback?.trim()
+      ) {
+        if (!options.ask) return state;
+        const pendingOutput = pending.output;
+        for (const [index, question] of pendingOutput.questions.entries()) {
+          if (options.signal?.aborted) throw new Error("Station cancelled.");
+          const answer = await options.ask(question.text);
+          if (!answer.trim())
+            throw new Error("A guided question was left unanswered.");
+          state.conversation.push({
+            role: "operator",
+            station,
+            text: answer,
+            at: now(),
+          });
+          pending.output = {
+            ...pendingOutput,
+            questions: pendingOutput.questions.slice(index + 1),
+          };
+          this.storage.save(state);
+        }
+      }
+      if (options.feedback?.trim())
+        state.conversation.push({
+          role: "operator",
+          station,
+          text: options.feedback,
+          at: now(),
+        });
       this.invalidateAfter(state, station);
       const record = this.record();
       state.stations[station] = record;
@@ -418,13 +453,6 @@ export class Kitchen {
             return state;
           }
         }
-        if (options.feedback)
-          state.conversation.push({
-            role: "operator",
-            station,
-            text: options.feedback,
-            at: now(),
-          });
         record.output = output;
         record.summary = output.summary;
         await this.applyOutput(state, station, output, record);
@@ -459,9 +487,11 @@ export class Kitchen {
             await this.renderReport(state),
           );
         }
-        const review = validateReviewOutput(await call("review"));
-        record.summary += "\nIndependent review: " + review.summary;
-        record.findings.push(...review.findings);
+        if (station !== "intent") {
+          const review = validateReviewOutput(await call("review"));
+          record.summary += "\nIndependent review: " + review.summary;
+          record.findings.push(...review.findings);
+        }
         if (station === "verify")
           writeFileSync(
             safePath(state.worktree, this.document(state, "verification")),
@@ -784,13 +814,9 @@ export class Kitchen {
     return this.storage.lock(feature, async () => {
       const state = await this.status(feature);
       this.requirePrevious(state, station);
-      const record = state.stations[station];
+      const record = requireAwaitingApproval(state, station);
       if (!options.actor.trim())
         throw new Error("Explicit human approver required.");
-      if (!record || record.status !== "awaiting-approval")
-        throw new Error(
-          `${station} is not awaiting approval. Rerun and review it.`,
-        );
       const fingerprint = await this.fingerprint(state, station);
       if (record.reviewFingerprint !== fingerprint)
         throw new Error(
@@ -820,6 +846,12 @@ export class Kitchen {
         )
           throw new Error("Invalid executable test plan cannot be waived.");
       }
+      if (docs.includes(station))
+        record.commit = await commitFiles(
+          state.worktree,
+          record.artifactFiles,
+          `docs(${feature}): approve ${station}`,
+        );
       if (station === "unit-tests") {
         const contract = this.contracts(state);
         const checkpoint = await commitFiles(

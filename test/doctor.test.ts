@@ -148,6 +148,35 @@ describe("live model readiness diagnostics", () => {
     ).toBe(true);
   });
 
+  it("probes intent author overrides and ignores unused intent reviewers", async () => {
+    config({
+      stations: {
+        intent: {
+          author: { provider: "codex", model: "intent-author" },
+          review: { provider: "claude", model: "unused-intent-review" },
+        },
+      },
+    });
+    const results = await doctor(root);
+    expect(probes()).toHaveLength(3);
+    expect(probes().some((probe) => probe.args.includes("intent-author"))).toBe(
+      true,
+    );
+    expect(
+      probes().some((probe) => probe.args.includes("unused-intent-review")),
+    ).toBe(false);
+    expect(
+      results.some((result) =>
+        result.reason?.includes("stations.intent.author"),
+      ),
+    ).toBe(true);
+    expect(
+      results.some((result) =>
+        result.reason?.includes("stations.intent.review"),
+      ),
+    ).toBe(false);
+  });
+
   it("isolates probes from repository instructions and retains local evidence", async () => {
     const results = await doctor(root);
     expect(probes()).toHaveLength(2);

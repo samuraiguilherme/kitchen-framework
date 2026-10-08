@@ -16,7 +16,7 @@ pnpm kitchen approve completion-notifications intent --actor your-name --minutes
 
 Authenticate the CLIs separately when doctor reports missing login: `codex login` and `claude auth login`. Doctor does not change accounts or log you in. GitHub is optional until publication. An explicit intended `github.account` in root `kitchen.config.json` is mandatory before pushing; the runner never selects an account for you.
 
-Doctor checks the configured CLI executables and logins, then makes a small structured hosted request for every distinct provider/model/executable/Windows-sandbox combination, including station overrides. These requests consume model quota. Each has a maximum 60-second timeout (or the smaller configured provider timeout); Ctrl+C cancels them. A login alone does not establish model access. Rejected models, quota/network errors, timeouts, and invalid responses fail readiness; skipped requests remain unverified and also cause a nonzero exit.
+Doctor checks the configured CLI executables and logins, then makes a small structured hosted request for every distinct provider/model/executable/Windows-sandbox combination, including station overrides. The unused `stations.intent.review` override is ignored. These requests consume model quota. Each has a maximum 60-second timeout (or the smaller configured provider timeout); Ctrl+C cancels them. A login alone does not establish model access. Rejected models, quota/network errors, timeouts, and invalid responses fail readiness; skipped requests remain unverified and also cause a nonzero exit.
 
 Model checks identify the configured model and roles. When `model` is omitted, they say `CLI default (inherited)` and test that choice without adding an override. Probes run in separate scratch directories without the feature request or repository instructions. Raw evidence is retained under `.kitchen/doctor/<run-id>/`. Doctor does not rerun a feature station.
 
@@ -24,7 +24,9 @@ Run from the monorepo or a kitchen worktree: the CLI resolves the common reposit
 
 ## Work through each station
 
-Run and accept each row before advancing. One invocation makes one authoring/revision pass and one independent review, then pauses. Guided question responses precede the authoring pass. If additional questions remain, status is `awaiting-input`; answer using a subsequent `--feedback-file` or interactive run.
+Run and accept each row before advancing. Intent makes one authoring/revision pass, validates the document, then pauses for human approval without an independent model review. Later stations also run an independent review before pausing. Guided question responses precede the authoring pass. If additional questions remain, status is `awaiting-input`; answer using a subsequent `--feedback-file` or interactive run.
+
+When resuming `awaiting-input`, an interactive `run` asks the saved questions before calling the author again. Each answer is saved immediately, so interrupted input resumes at the remaining questions. A non-interactive `run` without feedback returns the pending state without another provider call. Feedback is retained in the conversation even when the author asks more questions.
 
 Unresolved author questions take precedence over any bundled draft or file proposals. The runner retains the response as local evidence but applies no changes or checks and skips independent review until a fresh candidate contains no questions. Interactive runs collect answers before requesting that candidate; non-interactive runs pause with `awaiting-input`.
 
@@ -53,13 +55,19 @@ pnpm kitchen publish completion-notifications
 
 `start --issue https://github.com/HireBus/hirebus-v3/issues/123` records an optional issue link. There is no issue/project management, merge or deployment step. Publication is intentionally a separate human checkpoint.
 
-Documents live in the feature worktree at `docs/features/<feature>/`. Edit them there. Frontmatter status is descriptive; it never grants approval. Rerun a station after edits so the edited artifact receives independent review before acceptance. Use `run --feedback-file <path>` to direct revisions. Accepted document/input changes invalidate later approvals while preserving files.
+Documents live in the feature worktree at `docs/features/<feature>/`: `intent.md`, `spec.md`, `plan.md` and `test-plan.md`. Each successful document run writes its draft there. `approve <feature> <station>` commits that document on `codex/kitchen/<feature>` after validating the approval gates and any applicable independent review. Each document gets its own commit; unrelated staged files block approval. The main checkout is unchanged.
+
+The CLI shows station status, the absolute document path, the approval commit and the next command. An `awaiting-input` result lists outstanding questions and has no new candidate document. Add `--json` to `start`, `run`, `approve` or `status` for the complete machine-readable state.
+
+Edit documents in the feature worktree. Frontmatter status is descriptive; it never grants approval. Rerun a station after edits so the edited artifact is validated before acceptance, including independent review for stations after intent. Use `run --feedback-file <path>` to direct revisions. Accepted document/input changes invalidate later approvals while preserving files.
 
 The plan and test plan contain a visible JSON execution manifest appended by the runner. It records exact file scope, check profiles, test files, scaffold files and RED/GREEN expectations. Review it with the prose. Wildcards are not accepted as write scope. The author reads the existing intent/spec/plan templates and relevant repository instructions.
 
 ## Approvals and disputed findings
 
 The local approval record binds the reviewed artifact, upstream approvals, policy/rubric contents, check profiles, raw execution evidence and relevant source fingerprint. Edits after review require a new run. A required failed/unverified check cannot be accepted through a reviewer-resolution file.
+
+`approve` checks the station status before asking for your name. An `awaiting-input` station is a normal workflow pause: the CLI lists the saved questions and the next run command, records no approval, and exits successfully. `--json` returns that unchanged pending state. Supply the answers through an interactive run or `run --feedback-file <path>`. Intent reaches `awaiting-approval` after authoring and document validation; later stations also require independent review. Failed, stale or unstarted stations still produce an error when approval is attempted.
 
 To dispute a reviewer finding, create a JSON object mapping its finding ID to your evidence-based reason, then use `approve --resolutions <file> --actor <name>`. This records your disagreement. Confirmed blockers require correction and a new run. Profile/coverage/scope failures cannot be waived. `--minutes` records review effort in the report.
 

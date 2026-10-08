@@ -53,7 +53,7 @@ Fresh session. Read-only tools. Do not execute checks, git writes, hooks, extern
 The runner applies your structured file proposals after validating scope and runs approved check profiles.
 Never claim a check passed without the runner evidence. Clearly distinguish assumptions from human answers.
 Model-proposed product decisions need human resolution; ask focused questions when a decision is missing.
-One authoring/revision pass, followed by independent review. Return the exact requested JSON schema; no Markdown fences.
+One authoring/revision pass, followed by ${station === "intent" ? "human approval" : "independent review"}. Return the exact requested JSON schema; no Markdown fences.
 Feature: ${state.feature}
 Original request: ${state.request}
 Optional issue: ${state.issue ?? "none"}

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
-import type { Finding } from "./types.ts";
+import type { FeatureState, Finding, Station, StationRecord } from "./types.ts";
 
 export const stationOrder = [
   "intent",
@@ -198,4 +198,24 @@ export function gateReady(
         ["passed", "expected-red", "not-applicable"].includes(c.status),
     )
   );
+}
+export function requireAwaitingApproval(
+  state: FeatureState,
+  station: Station,
+): StationRecord {
+  const record = state.stations[station];
+  if (record?.status === "awaiting-input")
+    throw new Error(
+      `${station} is awaiting-input and needs human answers before approval.\nNext: pnpm kitchen run ${state.feature} ${station} --feedback-file <answers.txt>`,
+    );
+  if (!record || record.status !== "awaiting-approval") {
+    const command =
+      station === "publish"
+        ? `pnpm kitchen publish ${state.feature} --preview`
+        : `pnpm kitchen run ${state.feature} ${station}`;
+    throw new Error(
+      `${station} is not awaiting approval (status: ${record?.status ?? "not-started"}). Rerun and review it.\nNext: ${command}`,
+    );
+  }
+  return record;
 }

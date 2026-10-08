@@ -193,6 +193,73 @@ describe("station workflow", () => {
       /unit-tests/i,
     );
   });
+  it("commits each document on approval in the feature branch", async () => {
+    const { kitchen, root, base, calls } = fixture();
+    const started = await kitchen.start("answer", { request: "Return 42." });
+    let previousCommit = base;
+    for (const station of ["intent", "spec", "plan", "test-plan"] as const) {
+      const file = `docs/features/answer/${station}.md`;
+      const draft = await kitchen.run("answer", station);
+      expect(draft.stations[station]?.status).toBe("awaiting-approval");
+      expect(draft.stations[station]?.commit).toBeUndefined();
+      expect(
+        calls
+          .filter((call) => call.station === station)
+          .map((call) => call.role),
+      ).toEqual(station === "intent" ? ["author"] : ["author", "review"]);
+      if (station === "intent") {
+        expect(draft.stations.intent?.summary).toBe("Prepared");
+        await expect(kitchen.run("answer", "spec")).rejects.toThrow(/intent/i);
+      }
+      expect(git(started.worktree, "rev-parse", "HEAD")).toBe(previousCommit);
+      expect(existsSync(path.join(started.worktree, file))).toBe(true);
+
+      const approved = await kitchen.approve("answer", station, {
+        actor: "chef",
+      });
+      const commit = approved.stations[station]?.commit;
+      expect(commit).toMatch(/^[0-9a-f]{40}$/);
+      expect(commit).not.toBe(previousCommit);
+      expect(git(started.worktree, "rev-parse", "HEAD")).toBe(commit);
+      expect(
+        git(started.worktree, "show", "--format=", "--name-only", commit!),
+      ).toBe(file);
+      expect(git(started.worktree, "show", `${commit}:${file}`)).toBe(
+        readFileSync(path.join(started.worktree, file), "utf8").trim(),
+      );
+      expect(git(started.worktree, "status", "--porcelain", "--", file)).toBe(
+        "",
+      );
+      expect(git(root, "rev-parse", "HEAD")).toBe(base);
+      expect(existsSync(path.join(root, file))).toBe(false);
+      previousCommit = commit!;
+    }
+    const state = await kitchen.status("answer");
+    expect(
+      Object.values(state.stations).every((r) => r?.status === "approved"),
+    ).toBe(true);
+  });
+  it("leaves a document unapproved when unrelated files are staged", async () => {
+    const { kitchen, base } = fixture();
+    const state = await kitchen.start("answer", { request: "Return 42." });
+    await kitchen.run("answer", "intent");
+    writeFileSync(
+      path.join(state.worktree, "src/answer.ts"),
+      "export const answer = 1;\n",
+    );
+    git(state.worktree, "add", "src/answer.ts");
+
+    await expect(
+      kitchen.approve("answer", "intent", { actor: "chef" }),
+    ).rejects.toThrow(/unrelated staged changes/i);
+    const next = await kitchen.status("answer");
+    expect(next.stations.intent?.status).toBe("awaiting-approval");
+    expect(next.stations.intent?.commit).toBeUndefined();
+    expect(git(state.worktree, "rev-parse", "HEAD")).toBe(base);
+    expect(git(state.worktree, "diff", "--cached", "--name-only")).toBe(
+      "src/answer.ts",
+    );
+  });
   it("does not infer acceptance from frontmatter", async () => {
     const { kitchen } = fixture();
     const state = await kitchen.start("answer", { request: "Return 42." });
@@ -258,9 +325,10 @@ describe("station workflow", () => {
       readFileSync(path.join(state.worktree, "src/answer.ts"), "utf8"),
     ).toBe("export const answer = 0;\n");
     expect(setup.calls.map((call) => call.role)).toEqual(["author"]);
-    await expect(
-      kitchen.approve("answer", "intent", { actor: "chef" }),
-    ).rejects.toThrow();
+    for (const actor of ["chef", ""])
+      await expect(
+        kitchen.approve("answer", "intent", { actor }),
+      ).rejects.toThrow(/intent is awaiting-input.*human answers/i);
 
     const next = await kitchen.run("answer", "intent", {
       feedback: "Company owners",
@@ -272,11 +340,7 @@ describe("station workflow", () => {
     expect(setup.calls[1]?.prompt).toContain(
       "Human revision request:\nCompany owners",
     );
-    expect(setup.calls.map((call) => call.role)).toEqual([
-      "author",
-      "author",
-      "review",
-    ]);
+    expect(setup.calls.map((call) => call.role)).toEqual(["author", "author"]);
   });
   it.each([null, "Unresolved draft; not ready for review."])(
     "persists human answers separately and asks before authoring (draft: %s)",
@@ -325,12 +389,93 @@ describe("station workflow", () => {
       );
       expect(state.stations.intent?.status).toBe("awaiting-approval");
       expect(readFileSync(document, "utf8")).toBe(documents.intent);
-      expect(setup.calls.map((call) => call.role)).toEqual([
-        "author",
-        "review",
-      ]);
+      expect(setup.calls.map((call) => call.role)).toEqual(["author"]);
     },
   );
+  it("resumes saved questions before calling the author and keeps partial answers", async () => {
+    const setup = fixture();
+    const questions = [
+      { id: "audience", text: "Who needs the answer?" },
+      { id: "outcome", text: "What outcome do they need?" },
+    ];
+    const kitchen = new Kitchen({
+      root: setup.root,
+      github: setup.gateway,
+      provider: async (request) => {
+        const output = await setup.provider(request);
+        if (request.role === "author" && setup.calls.length === 1)
+          return { ...output, questions, document: null };
+        return output;
+      },
+    });
+    await kitchen.start("answer", { request: "Return 42." });
+    const pending = await kitchen.run("answer", "intent");
+    const runId = pending.stations.intent?.runId;
+    const unchanged = await kitchen.run("answer", "intent");
+    expect(unchanged.stations.intent?.runId).toBe(runId);
+    expect(setup.calls.map((call) => call.role)).toEqual(["author"]);
+
+    await expect(
+      kitchen.run("answer", "intent", {
+        ask: async (question) => {
+          expect(setup.calls).toHaveLength(1);
+          if (question === questions[0]!.text) return "Company owners";
+          throw new Error("Interrupted while answering");
+        },
+      }),
+    ).rejects.toThrow("Interrupted while answering");
+    const interrupted = await kitchen.status("answer");
+    expect(interrupted.stations.intent?.status).toBe("awaiting-input");
+    expect(interrupted.stations.intent?.output?.questions).toEqual([
+      questions[1],
+    ]);
+    expect(interrupted.conversation).toContainEqual(
+      expect.objectContaining({ role: "operator", text: "Company owners" }),
+    );
+
+    const asked: string[] = [];
+    const resumed = await kitchen.run("answer", "intent", {
+      ask: async (question) => {
+        expect(setup.calls).toHaveLength(1);
+        asked.push(question);
+        return "Return 42";
+      },
+    });
+    expect(asked).toEqual([questions[1]!.text]);
+    expect(resumed.stations.intent?.status).toBe("awaiting-approval");
+    expect(setup.calls.map((call) => call.role)).toEqual(["author", "author"]);
+    expect(setup.calls[1]?.prompt).toContain("Company owners");
+    expect(setup.calls[1]?.prompt).toContain('"text":"Return 42"');
+    expect(
+      resumed.conversation.filter((entry) => entry.role === "model"),
+    ).toHaveLength(2);
+  });
+  it("keeps feedback answers when the author requests further input", async () => {
+    const setup = fixture();
+    const kitchen = new Kitchen({
+      root: setup.root,
+      github: setup.gateway,
+      provider: async (request) => {
+        const output = await setup.provider(request);
+        return {
+          ...output,
+          document: null,
+          questions: [{ id: "policy", text: "Which billing policy applies?" }],
+        };
+      },
+    });
+    await kitchen.start("answer", { request: "Return 42." });
+    const state = await kitchen.run("answer", "intent", {
+      feedback: "Company owners need to see the answer.",
+    });
+    expect(state.stations.intent?.status).toBe("awaiting-input");
+    expect((await kitchen.status("answer")).conversation).toContainEqual(
+      expect.objectContaining({
+        role: "operator",
+        text: "Company owners need to see the answer.",
+      }),
+    );
+  });
   it("defers a bundled candidate when more questions remain after guided answers", async () => {
     const setup = fixture();
     let authorCalls = 0;

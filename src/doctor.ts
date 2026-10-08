@@ -41,7 +41,8 @@ export async function doctor(
   addPair(config.providers.review, "providers.review");
   for (const [station, roles] of Object.entries(config.stations)) {
     if (roles.author) addPair(roles.author, `stations.${station}.author`);
-    if (roles.review) addPair(roles.review, `stations.${station}.review`);
+    if (station !== "intent" && roles.review)
+      addPair(roles.review, `stations.${station}.review`);
   }
   const packageFile = path.join(root, "package.json");
   const pinned = existsSync(packageFile)

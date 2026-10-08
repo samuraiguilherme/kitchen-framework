@@ -114,6 +114,7 @@ export interface StationRecord {
   summary: string;
   artifactFiles: string[];
   output?: AuthorOutput;
+  commit?: string;
   reviewFingerprint?: string;
   approval?: Approval;
   error?: string;
