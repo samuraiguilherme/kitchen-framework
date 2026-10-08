@@ -1,0 +1,21 @@
+{
+  "version": "1.0.0",
+  "station": "verify",
+  "labelStatus": "Proposed examples; no human labels recorded.",
+  "examples": [
+    {
+      "id": "verify-acceptable",
+      "context": "AC-1 deliver once; AC-2 tenant isolation. Original tests-first hash abc; current approved hash abc; baseline RED and final candidate fingerprint def.",
+      "candidate": "Business logic: duplicate events hit the existing uniqueness constraint. Architecture: uses scoped repository convention. Edge cases: A/B fixture and retry tests executed. Actual flows: candidate-specific preview http://127.0.0.1:49152 started from candidate build; local fixture used; manual observer saw one notification. Test integrity: approved hashes unchanged. Runner: 4 discovered, 4 executed, 4 passed; fingerprint def. Remaining limitation: real provider delivery outside scope.",
+      "expected": "acceptable",
+      "humanLabel": null
+    },
+    {
+      "id": "verify-flawed",
+      "context": "AC-1 deliver once; AC-2 tenant isolation. Original tests-first hash abc; current approved hash abc; baseline RED and final candidate fingerprint def.",
+      "candidate": "Looks good. pnpm test exited zero with 0 tests. Browser tested the already-running localhost:3000, whose source fingerprint is unknown. Approved assertion hash changed to xyz; tests were simplified to pass. Claim: all requirements verified.",
+      "expected": "flawed",
+      "humanLabel": null
+    }
+  ]
+}

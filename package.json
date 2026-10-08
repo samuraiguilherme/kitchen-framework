@@ -2,7 +2,6 @@
   "name": "@hirebus/kitchen",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22" },
   "scripts": {
     "cli": "tsx src/cli.ts",
     "test": "vitest run",
@@ -20,5 +19,8 @@
     "tsx": "4.21.0",
     "typescript": "5.9.3",
     "vitest": "3.2.4"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

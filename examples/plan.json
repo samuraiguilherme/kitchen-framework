@@ -1,0 +1,21 @@
+{
+  "version": "1.0.0",
+  "station": "plan",
+  "labelStatus": "Proposed examples; no human labels recorded.",
+  "examples": [
+    {
+      "id": "plan-acceptable",
+      "context": "AC-1 deliver once, AC-2 tenant boundary. Existing src/notifications/repository.ts supports insertIfAbsent(companyId, applicationId, ownerId). Repository conventions require company scope.",
+      "candidate": "# Plan\n## Description\nUse existing insertIfAbsent with event companyId and applicationId; load active owners through the company-scoped repository. No schema changes.\n## Files to change\nsrc/notifications/completion.ts and src/notifications/completion.test.ts: AC-1 and AC-2.\n## Steps to implement\n1. Approve test-plan.md.\n2. Write and accept missing-behavior unit tests; commit tests.\n3. Implement company-scoped owner lookup and idempotent insertion.\n4. Run unit and local integration checks.\n## Test plan\nSee ./test-plan.md.\n## Risks\nConcurrent retries: verify existing uniqueness constraint. Roll out behind completion-notifications flag; disable flag to roll back. Accepted path manifest includes only these two files.",
+      "expected": "acceptable",
+      "humanLabel": null
+    },
+    {
+      "id": "plan-flawed",
+      "context": "AC-1 deliver once, AC-2 tenant boundary. Existing src/notifications/repository.ts supports insertIfAbsent(companyId, applicationId, ownerId). Repository conventions require company scope.",
+      "candidate": "# Plan\nCreate a second global notifications singleton. Query every owner without companyId, add email delivery and change billing. Tests can be adjusted after coding.",
+      "expected": "flawed",
+      "humanLabel": null
+    }
+  ]
+}

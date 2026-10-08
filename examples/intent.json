@@ -1,0 +1,21 @@
+{
+  "version": "1.0.0",
+  "station": "intent",
+  "labelStatus": "Proposed examples; no human labels recorded.",
+  "examples": [
+    {
+      "id": "intent-acceptable",
+      "context": "Request: Owners need to know when a candidate completes an application. Current support tickets show they check manually.",
+      "candidate": "# Completion notifications\n## What the product can't do today\nOwners cannot see completion without opening each application.\n## Who is affected\nCompany owners monitoring active applications.\n## What better looks like\nOwners see one completion notification within 60 seconds. Success evidence: compare completion timestamps with delivered in-app notifications in a local fixture.\n## Out of scope\nEmail, SMS, billing and member notifications.\n## Constraints\nTenant isolation. No new provider dependency.\n## Proposed assumptions\nNone. Failure/retry behavior is decided in the spec.",
+      "expected": "acceptable",
+      "humanLabel": null
+    },
+    {
+      "id": "intent-flawed",
+      "context": "Request: Owners need to know when a candidate completes an application. Current support tickets show they check manually.",
+      "candidate": "# Completion notifications\n## Problem\nSend SMS to everyone. Premium-only feature, with ten credits charged automatically. Assumed approved by customer.",
+      "expected": "flawed",
+      "humanLabel": null
+    }
+  ]
+}

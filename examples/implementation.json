@@ -1,0 +1,21 @@
+{
+  "version": "1.0.0",
+  "station": "implementation",
+  "labelStatus": "Proposed examples; no human labels recorded.",
+  "examples": [
+    {
+      "id": "implementation-acceptable",
+      "context": "Accepted tests check idempotence and tenant isolation. Scope only completion.ts and completion.test.ts; unit tests already committed and hashed.",
+      "candidate": "completion.ts diff: derive companyId from the validated event; await repo.listActiveOwners(companyId); for each owner await repo.insertIfAbsent(companyId, applicationId, owner.id). Approved unit tests unchanged. Runner reports 2/2 GREEN, same source fingerprint, no scope deviations.",
+      "expected": "acceptable",
+      "humanLabel": null
+    },
+    {
+      "id": "implementation-flawed",
+      "context": "Accepted tests check idempotence and tenant isolation. Scope only completion.ts and completion.test.ts; unit tests already committed and hashed.",
+      "candidate": "completion.test.ts diff: change expected notification count from 1 to 2; delete AC-2; mock complete handler. completion.ts now queries owners globally. All remaining tests pass.",
+      "expected": "flawed",
+      "humanLabel": null
+    }
+  ]
+}

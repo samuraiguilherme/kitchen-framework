@@ -1,0 +1,21 @@
+{
+  "version": "1.0.0",
+  "station": "test-plan",
+  "labelStatus": "Proposed examples; no human labels recorded.",
+  "examples": [
+    {
+      "id": "test-plan-acceptable",
+      "context": "AC-1 deliver once; AC-2 tenant isolation. Approved scope: completion.ts and completion.test.ts. Profile notifications-unit runs Vitest JSON against disposable local fixtures.",
+      "candidate": "# Test plan\n## Acceptance coverage\nAC-1: duplicate completion unit case, expected RED at baseline; AC-2: company B owner receives none, expected RED. Both required.\n## Unit tests\ncompletion.test.ts tests describe('AC-1 duplicate event') and describe('AC-2 tenant boundary'). Fake repository stores rows keyed by company/application/owner; assertions inspect final rows and scoped calls. Do not mock the completion handler.\n## Regression\nExisting notification read permissions suite remains unchanged and must stay GREEN.\n## Required evidence\nRequired notifications-unit profile: nonzero executed tests, per-criterion behavioral RED then final GREEN. Local integration uses A/B companies. Existing tests may change only for explicit contract changes, with requirement rationale and renewed approval. No scaffold required.",
+      "expected": "acceptable",
+      "humanLabel": null
+    },
+    {
+      "id": "test-plan-flawed",
+      "context": "AC-1 deliver once; AC-2 tenant isolation. Approved scope: completion.ts and completion.test.ts. Profile notifications-unit runs Vitest JSON against disposable local fixtures.",
+      "candidate": "# Test plan\nMock notify to return true; assert returned value. AC-2 can be checked later against production. Run pnpm dev and treat exit zero as passing. If existing assertions fail, remove them.",
+      "expected": "flawed",
+      "humanLabel": null
+    }
+  ]
+}

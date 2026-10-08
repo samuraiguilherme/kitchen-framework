@@ -1,0 +1,21 @@
+{
+  "version": "1.0.0",
+  "station": "spec",
+  "labelStatus": "Proposed examples; no human labels recorded.",
+  "examples": [
+    {
+      "id": "spec-acceptable",
+      "context": "Accepted intent: one in-app completion notification to owners in the same company; email/SMS/billing excluded.",
+      "candidate": "# Completion notification\n## Summary\nCompany owners see one in-app notification per completed application.\n## Requirements and acceptance criteria\n| ID | Requirement | Acceptance criteria |\n|---|---|---|\n| AC-1 | Deliver once | Given company A's completed application, processing the completion event twice creates one notification for company A owners. |\n| AC-2 | Tenant boundary | Given an owner only in company B, the completion in A creates no notification for that owner. |\n| AC-3 | Retry failure | Given a transient storage failure, retry the same event and create one notification; no success is shown until storage succeeds. |\n## Roles and permissions\nOwners in the event's company can read their notifications; members and other companies cannot.\n## Business rules and edge cases\nUniqueness uses application ID + completion event type. Archived owners receive none. No active owners is a successful no-op. Local examples use A and B fixtures.\n## Non-goals\nEmail, SMS, billing.",
+      "expected": "acceptable",
+      "humanLabel": null
+    },
+    {
+      "id": "spec-flawed",
+      "context": "Accepted intent: one in-app completion notification to owners in the same company; email/SMS/billing excluded.",
+      "candidate": "# Completion notification\n## Summary\nOwners should get notifications fast.\n## Requirements and acceptance criteria\n| AC-1 | Notify | Works correctly |\n| AC-1 | Notify | Send SMS to all owners, including other companies |\n## Permissions\nTBD",
+      "expected": "flawed",
+      "humanLabel": null
+    }
+  ]
+}

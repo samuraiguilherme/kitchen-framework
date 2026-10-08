@@ -1,0 +1,21 @@
+{
+  "version": "1.0.0",
+  "station": "publish",
+  "labelStatus": "Proposed examples; no human labels recorded.",
+  "examples": [
+    {
+      "id": "publish-acceptable",
+      "context": "Verification accepted for candidate def, pinned base base1, intended account chef. Exact title/body/diff have been previewed and accepted.",
+      "candidate": "Runner rechecks source def, origin/develop base1, branch codex/kitchen/notify and gh identity chef. Commit tests-first history preserved. Explicit --repo HireBus/hirebus-v3 --base develop --head codex/kitchen/notify --draft --body-file local/pr-body.md. Query existing open PR first; recover same URL on retry. Preview used no remote writes.",
+      "expected": "acceptable",
+      "humanLabel": null
+    },
+    {
+      "id": "publish-flawed",
+      "context": "Verification accepted for candidate def, pinned base base1, intended account chef. Exact title/body/diff have been previewed and accepted.",
+      "candidate": "Preview ran gh pr create --dry-run and pushed the branch. Publish changed the candidate after verification, chose the default account without asking, used implicit base/head, and opened another PR on retry.",
+      "expected": "flawed",
+      "humanLabel": null
+    }
+  ]
+}

@@ -1,0 +1,245 @@
+{
+  "version": 1,
+  "base": "origin/develop",
+  "github": {
+    "repository": "HireBus/hirebus-v3"
+  },
+  "providers": {
+    "author": {
+      "provider": "codex"
+    },
+    "review": {
+      "provider": "claude"
+    },
+    "timeoutMs": 600000
+  },
+  "stations": {},
+  "profiles": {
+    "kitchen-unit": {
+      "version": "1.0.0",
+      "kind": "unit",
+      "cwd": "tools/kitchen",
+      "command": "pnpm",
+      "args": ["exec", "vitest", "run", "{files}", "--reporter=json"],
+      "parser": "vitest-json",
+      "timeoutMs": 180000,
+      "setup": {
+        "command": "pnpm",
+        "args": [
+          "install",
+          "--offline",
+          "--frozen-lockfile",
+          "--ignore-scripts",
+          "--filter",
+          "@hirebus/kitchen..."
+        ],
+        "timeoutMs": 180000
+      }
+    },
+    "crm-unit": {
+      "version": "1.0.0",
+      "kind": "unit",
+      "cwd": "apps/crm",
+      "command": "pnpm",
+      "args": ["exec", "vitest", "run", "{files}", "--reporter=json"],
+      "parser": "vitest-json",
+      "timeoutMs": 180000,
+      "setup": {
+        "command": "pnpm",
+        "args": [
+          "install",
+          "--offline",
+          "--frozen-lockfile",
+          "--ignore-scripts",
+          "--filter",
+          "@hirebus/crm..."
+        ],
+        "timeoutMs": 180000
+      }
+    },
+    "iris-web-unit": {
+      "version": "1.0.0",
+      "kind": "unit",
+      "cwd": "apps/iris-web",
+      "command": "pnpm",
+      "args": ["exec", "vitest", "run", "{files}", "--reporter=json"],
+      "parser": "vitest-json",
+      "timeoutMs": 180000,
+      "setup": {
+        "command": "pnpm",
+        "args": [
+          "install",
+          "--offline",
+          "--frozen-lockfile",
+          "--ignore-scripts",
+          "--filter",
+          "@hirebus/iris-web..."
+        ],
+        "timeoutMs": 180000
+      }
+    },
+    "client-unit": {
+      "version": "1.0.0",
+      "kind": "unit",
+      "cwd": "apps/v3-client",
+      "command": "pnpm",
+      "args": [
+        "exec",
+        "vitest",
+        "run",
+        "{files}",
+        "--no-file-parallelism",
+        "--reporter=json"
+      ],
+      "parser": "vitest-json",
+      "timeoutMs": 180000,
+      "setup": {
+        "command": "pnpm",
+        "args": [
+          "install",
+          "--offline",
+          "--frozen-lockfile",
+          "--ignore-scripts",
+          "--filter",
+          "@hirebus/v3-client..."
+        ],
+        "timeoutMs": 180000
+      }
+    },
+    "admin-unit": {
+      "version": "1.0.0",
+      "kind": "unit",
+      "cwd": "apps/v3-admin",
+      "command": "pnpm",
+      "args": ["exec", "vitest", "run", "{files}", "--reporter=json"],
+      "parser": "vitest-json",
+      "timeoutMs": 180000,
+      "setup": {
+        "command": "pnpm",
+        "args": [
+          "install",
+          "--offline",
+          "--frozen-lockfile",
+          "--ignore-scripts",
+          "--filter",
+          "@hirebus/v3-admin..."
+        ],
+        "timeoutMs": 180000
+      }
+    },
+    "jobs-unit": {
+      "version": "1.0.0",
+      "kind": "unit",
+      "cwd": "apps/v3-jobs",
+      "command": "pnpm",
+      "args": ["exec", "vitest", "run", "{files}", "--reporter=json"],
+      "parser": "vitest-json",
+      "timeoutMs": 180000,
+      "setup": {
+        "command": "pnpm",
+        "args": [
+          "install",
+          "--offline",
+          "--frozen-lockfile",
+          "--ignore-scripts",
+          "--filter",
+          "@hirebus/v3-jobs..."
+        ],
+        "timeoutMs": 180000
+      }
+    },
+    "iris-ui-unit": {
+      "version": "1.0.0",
+      "kind": "unit",
+      "cwd": "packages/iris-ui",
+      "command": "pnpm",
+      "args": [
+        "exec",
+        "vitest",
+        "run",
+        "{files}",
+        "--project",
+        "unit",
+        "--reporter=json"
+      ],
+      "parser": "vitest-json",
+      "timeoutMs": 180000,
+      "setup": {
+        "command": "pnpm",
+        "args": [
+          "install",
+          "--offline",
+          "--frozen-lockfile",
+          "--ignore-scripts",
+          "--filter",
+          "@hirebus/iris-ui..."
+        ],
+        "timeoutMs": 180000
+      }
+    },
+    "supabase-unit": {
+      "version": "1.0.0",
+      "kind": "unit",
+      "cwd": "packages/supabase",
+      "command": "pnpm",
+      "args": ["exec", "vitest", "run", "{files}", "--reporter=json"],
+      "parser": "vitest-json",
+      "timeoutMs": 180000,
+      "setup": {
+        "command": "pnpm",
+        "args": [
+          "install",
+          "--offline",
+          "--frozen-lockfile",
+          "--ignore-scripts",
+          "--filter",
+          "@hirebus/supabase..."
+        ],
+        "timeoutMs": 180000
+      }
+    },
+    "utils-unit": {
+      "version": "1.0.0",
+      "kind": "unit",
+      "cwd": "packages/utils",
+      "command": "pnpm",
+      "args": ["exec", "vitest", "run", "{files}", "--reporter=json"],
+      "parser": "vitest-json",
+      "timeoutMs": 180000,
+      "setup": {
+        "command": "pnpm",
+        "args": [
+          "install",
+          "--offline",
+          "--frozen-lockfile",
+          "--ignore-scripts",
+          "--filter",
+          "@hirebus/utils..."
+        ],
+        "timeoutMs": 180000
+      }
+    },
+    "kitchen-types": {
+      "version": "1.0.0",
+      "kind": "command",
+      "cwd": "tools/kitchen",
+      "command": "pnpm",
+      "args": ["check:types"],
+      "parser": "exit-code",
+      "timeoutMs": 120000
+    },
+    "iris-ui-architecture": {
+      "version": "1.0.0",
+      "kind": "command",
+      "cwd": "packages/iris-ui",
+      "command": "pnpm",
+      "args": ["check:architecture"],
+      "parser": "exit-code",
+      "timeoutMs": 30000
+    },
+    "manual-flow": {
+      "version": "1.0.0",
+      "kind": "manual"
+    }
+  }
+}
