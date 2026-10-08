@@ -554,13 +554,19 @@ describe("station workflow", () => {
     ).toBe("passed");
     await kitchen.approve("answer", "unit-tests", { actor: "chef" });
   });
-  it("blocks identity mismatch and base drift before any remote writes", async () => {
+  it("blocks push URL drift, identity mismatch and base drift before any remote writes", async () => {
     const setup = fixture();
     await acceptDocs(setup.kitchen);
     for (const station of ["unit-tests", "implementation", "verify"] as const) {
       await setup.kitchen.run("answer", station);
       await setup.kitchen.approve("answer", station, { actor: "chef" });
     }
+    git(setup.root, 'remote', 'set-url', '--push', 'origin', 'https://example.invalid/HireBus/hirebus-v3.git');
+    await setup.kitchen.publish('answer', { preview: true });
+    await setup.kitchen.approve('answer', 'publish', { actor: 'chef' });
+    await expect(setup.kitchen.publish('answer')).rejects.toThrow(/origin/i);
+    expect(setup.counts()).toEqual({ created: 0, pushed: 0 });
+    git(setup.root, 'remote', 'set-url', '--push', 'origin', setup.remote);
     const file = path.join(setup.root, "kitchen.config.json");
     const config = JSON.parse(readFileSync(file, "utf8"));
     config.github.account = "another-person";
