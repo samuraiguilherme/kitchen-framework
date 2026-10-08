@@ -1,6 +1,6 @@
 # Kitchen framework verification
 
-Checked change-set fingerprint (SHA-256): `e0db8e1be3965e9309a3dd87dbf40ecbe0e9d7959efc7a09124e96badbd65002`.
+Checked change-set fingerprint (SHA-256): `bce2b4b5c79f745aff75fd2833fc6418de73f0f664b40adac06cbc9542f18d0c`.
 
 This hashes the 54 changed implementation, test, configuration, rubric/example and documentation files, excluding this self-referencing report. The file manifest and raw outputs are retained locally in `.kitchen/framework-evidence/`.
 
@@ -9,6 +9,8 @@ Pinned development base: `e038b951accd611de09608de7acdbb06df60d223`.
 Tests-first contract commit: `7f57822b39f43b54ea122df8fb7d020e2dad4b91`.
 
 Implementation commit: `81f49fc49`.
+
+Publication regression checkpoint: `ea18bc384` (observed assertion failure before the fix). Publication fix: `4c89edbf0`.
 
 ## Executable evidence
 
@@ -37,7 +39,7 @@ The initial missing-implementation failures establish that tests were committed 
 - AC-4: behavioral baseline RED, legitimate preservation GREEN, nonzero execution counts and tests-first commit contents.
 - AC-5: atomic rejection of approved-test rewrites, manual tampering detection, scaffold implementation and independently reviewed baseline test revisions.
 - AC-6: required GREEN failures block acceptance; absent local fixtures remain unverified; observations require evidence; a dedicated candidate preview preserves an existing service; altered raw evidence invalidates acceptance.
-- AC-7: explicit draft arguments/body file, no remote writes during preview, source/base/identity rejection and recovery after a lost PR-create response without duplicates.
+- AC-7: explicit draft arguments/body file, no remote writes during preview, source/base/identity rejection, validation of every origin fetch/push destination and recovery after a lost PR-create response without duplicates.
 - AC-8: proposed examples never count as human calibration; supplied label fixtures measure missed problems and unnecessary findings.
 - AC-9: dead-process recovery, concurrent-feature locking and retry after provider failures.
 
