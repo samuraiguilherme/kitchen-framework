@@ -1,12 +1,23 @@
 import { Ajv } from "ajv";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmdirSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { runProcess } from "./process.ts";
+import type { ProcessResult } from "./process.ts";
+import { providerProgress } from "./provider-progress.ts";
 import type {
   AuthorOutput,
   Provider,
   ProviderName,
+  ProviderRequest,
   ReviewOutput,
+  RoleConfig,
 } from "./types.ts";
 
 const str = { type: "string" };
@@ -97,7 +108,7 @@ export function parseProviderOutput(
     !result.structured_output
   )
     throw new Error(
-      "Claude failed or denied a required tool; inspect local transcript.",
+      `Claude failed or denied a required tool: ${errorMessage(result.errors ?? result.result ?? "missing structured output; inspect local transcript")}`,
     );
   return result.structured_output;
 }
@@ -108,6 +119,7 @@ export function providerInvocation(
   _role: "author" | "review",
   model?: string,
   executable?: string,
+  windowsSandbox?: RoleConfig["windowsSandbox"],
 ): { command: string; args: string[] } {
   const args =
     provider === "codex"
@@ -158,14 +170,65 @@ export function providerInvocation(
           "Read,Glob,Grep",
           "--strict-mcp-config",
           "--mcp-config",
-          "{}",
+          '{"mcpServers":{}}',
           "--no-session-persistence",
           "--disable-slash-commands",
         ];
   if (model) args.push("--model", model);
+  if (provider === "codex" && windowsSandbox)
+    args.push("-c", `windows.sandbox="${windowsSandbox}"`);
   return { command: executable ?? provider, args };
 }
-export const hostedProvider: Provider = async (request) => {
+function errorMessage(value: unknown): string {
+  if (typeof value === "string") {
+    try {
+      return errorMessage(JSON.parse(value));
+    } catch {
+      return value;
+    }
+  }
+  if (Array.isArray(value)) return value.map(errorMessage).join("; ");
+  if (value && typeof value === "object") {
+    const error = value as Record<string, unknown>;
+    const detail = error.error ?? error.message ?? error.result;
+    return detail === undefined ? JSON.stringify(value) : errorMessage(detail);
+  }
+  return String(value);
+}
+function processError(provider: ProviderName, result: ProcessResult): string {
+  let detail = "";
+  if (provider === "codex") {
+    for (const line of result.stdout.trim().split(/\r?\n/).reverse()) {
+      try {
+        const event = JSON.parse(line);
+        if (event.type === "error" || event.type === "turn.failed") {
+          detail = errorMessage(event.error ?? event.message);
+          break;
+        }
+      } catch {
+        // Some CLI failures emit plain text instead of JSONL.
+      }
+    }
+  } else {
+    try {
+      const envelope = JSON.parse(result.stdout);
+      if (envelope.is_error)
+        detail = errorMessage(envelope.errors ?? envelope.result);
+    } catch {
+      // Fall back to the captured process output.
+    }
+  }
+  return (
+    detail ||
+    result.stderr.trim() ||
+    result.stdout.trim() ||
+    `Exited with code ${result.code}`
+  ).slice(-1500);
+}
+async function invokeProvider(
+  request: ProviderRequest,
+  probe = false,
+): Promise<unknown> {
   mkdirSync(request.runDir, { recursive: true });
   const schema = request.role === "author" ? authorSchema : reviewSchema;
   const schemaFile = path.join(request.runDir, `${request.role}-schema.json`);
@@ -182,22 +245,58 @@ export const hostedProvider: Provider = async (request) => {
     request.role,
     request.config.model,
     request.config.executable,
+    request.config.windowsSandbox,
   );
+  if (probe) {
+    if (request.config.provider === "codex")
+      invocation.args.push("--skip-git-repo-check");
+    else invocation.args[invocation.args.indexOf("--tools") + 1] = "";
+  }
   // stdin avoids PowerShell interpolation and Windows command-length limits for prompts.
-  const result = await runProcess({
-    ...invocation,
-    cwd: request.cwd,
-    input: request.prompt,
-    timeoutMs: request.timeoutMs,
-    signal: request.signal,
-  });
+  const progress = providerProgress(request);
+  progress.report(
+    `starting ${request.config.provider}; model=${request.config.model ?? "CLI default"}${request.config.provider === "codex" ? `; windowsSandbox=${request.config.windowsSandbox ?? "CLI default"}` : ""}; evidence=${request.runDir}`,
+  );
+  const heartbeat = setInterval(
+    () => progress.report("provider still running"),
+    15000,
+  );
+  let result: ProcessResult;
+  try {
+    result = await runProcess({
+      ...invocation,
+      cwd: request.cwd,
+      input: request.prompt,
+      timeoutMs: request.timeoutMs,
+      signal: request.signal,
+      onOutput: progress.capture,
+    });
+    const failureReason = result.failureReason ?? progress.finish();
+    if (failureReason) result = { ...result, code: -1, failureReason };
+  } finally {
+    clearInterval(heartbeat);
+  }
   writeFileSync(
     path.join(request.runDir, `${request.role}-process.json`),
-    JSON.stringify(result, null, 2),
+    JSON.stringify(
+      {
+        ...result,
+        provider: request.config.provider,
+        model: request.config.model ?? null,
+        windowsSandbox: request.config.windowsSandbox ?? null,
+        executable: invocation.command,
+        cwd: request.cwd,
+      },
+      null,
+      2,
+    ),
+  );
+  progress.report(
+    `process exited; code=${result.code}${result.failureReason ? `; ${result.failureReason}` : ""}`,
   );
   if (result.code !== 0)
     throw new Error(
-      `${request.config.provider} ${result.cancelled ? "cancelled" : result.timedOut ? "timed out" : "failed"}: ${result.stderr.slice(-1500)}`,
+      `${request.config.provider} ${result.cancelled ? "cancelled" : result.timedOut ? "timed out" : "failed"}: ${result.failureReason ?? processError(request.config.provider, result)}`,
     );
   const raw =
     request.config.provider === "codex"
@@ -208,7 +307,49 @@ export const hostedProvider: Provider = async (request) => {
     path.join(request.runDir, `${request.role}-output.json`),
     JSON.stringify(output, null, 2),
   );
+  return output;
+}
+export const hostedProvider: Provider = async (request) => {
+  const output = await invokeProvider(request);
   return request.role === "author"
     ? validateAuthorOutput(output)
     : validateReviewOutput(output);
 };
+
+export async function probeProvider(
+  config: RoleConfig,
+  runDir: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  // A child directory inside the repository still inherits its AGENTS/CLAUDE files.
+  const cwd = mkdtempSync(path.join(tmpdir(), "kitchen-model-probe-"));
+  try {
+    const output = validateReviewOutput(
+      await invokeProvider(
+        {
+          station: "intent",
+          role: "review",
+          config,
+          cwd,
+          runDir,
+          timeoutMs,
+          signal,
+          prompt:
+            'This is a model availability check. Do not use tools or read files. Return only the JSON object {"summary":"Kitchen model probe OK","findings":[]}.',
+        },
+        true,
+      ),
+    );
+    if (output.summary !== "Kitchen model probe OK" || output.findings.length)
+      throw new Error(
+        "Unexpected model probe response; structured request not verified.",
+      );
+  } finally {
+    try {
+      rmdirSync(cwd);
+    } catch {
+      // Remove only this empty scratch directory; never recursively delete provider-created files.
+    }
+  }
+}

@@ -81,7 +81,10 @@ async function main(): Promise<void> {
   try {
     const [command, feature, selected] = positionals;
     if (command === "doctor") {
-      const results = await doctor(root);
+      const results = await doctor(root, {
+        signal: controller.signal,
+        onProgress: (message) => console.error(message),
+      });
       console.log(JSON.stringify(results, null, 2));
       if (results.some((r) => r.required && r.status !== "passed"))
         process.exitCode = 1;
@@ -142,6 +145,7 @@ async function main(): Promise<void> {
             feedback,
             signal: controller.signal,
             observations,
+            onProgress: (message) => console.error(message),
           }),
           null,
           2,

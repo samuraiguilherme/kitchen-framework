@@ -4,27 +4,50 @@ import type { Config, Profile, RoleConfig } from "./types.ts";
 import { stationOrder } from "./domain.ts";
 
 export function loadConfig(root: string): Config {
-  const file = path.join(root, "kitchen.config.json");
-  const input = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+  const read = (name: string): Partial<Config> => {
+    const file = path.join(root, name);
+    return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+  };
+  const shared = read("kitchen.config.json");
+  const local = read("kitchen.config.local.json");
   const config: Config = {
     version: 1,
     base: "origin/develop",
-    github: { repository: "" },
+    ...shared,
+    ...local,
+    github: { repository: "", ...shared.github, ...local.github },
     providers: {
-      author: { provider: "codex" },
-      review: { provider: "claude" },
       timeoutMs: 600000,
+      ...shared.providers,
+      ...local.providers,
+      author: {
+        provider: "codex",
+        ...shared.providers?.author,
+        ...local.providers?.author,
+      },
+      review: {
+        provider: "claude",
+        ...shared.providers?.review,
+        ...local.providers?.review,
+      },
     },
-    stations: {},
-    profiles: {},
-    ...input,
+    stations: { ...shared.stations, ...local.stations },
+    profiles: { ...shared.profiles, ...local.profiles },
   };
-  config.providers = {
-    author: { provider: "codex" },
-    review: { provider: "claude" },
-    timeoutMs: 600000,
-    ...input.providers,
-  };
+  for (const station of stationOrder) {
+    const overrides = local.stations?.[station];
+    if (!overrides) continue;
+    const original = shared.stations?.[station];
+    const pair = { ...original, ...overrides };
+    for (const role of ["author", "review"] as const) {
+      if (overrides[role])
+        pair[role] = {
+          ...(original?.[role] ?? config.providers[role]),
+          ...overrides[role],
+        };
+    }
+    config.stations[station] = pair;
+  }
   if (config.version !== 1 || config.base !== "origin/develop")
     throw new Error(
       "Supported config version is 1, base must be origin/develop.",
@@ -33,8 +56,13 @@ export function loadConfig(root: string): Config {
     if (
       !value ||
       !["codex", "claude"].includes(value.provider) ||
-      (value.model !== undefined && typeof value.model !== "string") ||
-      (value.executable !== undefined && typeof value.executable !== "string")
+      (value.model !== undefined &&
+        (typeof value.model !== "string" || !value.model.trim())) ||
+      (value.executable !== undefined &&
+        typeof value.executable !== "string") ||
+      (value.windowsSandbox !== undefined &&
+        (value.provider !== "codex" ||
+          !["elevated", "unelevated"].includes(value.windowsSandbox)))
     )
       throw new Error("Invalid provider configuration.");
   };

@@ -6,10 +6,12 @@
   },
   "providers": {
     "author": {
-      "provider": "codex"
+      "provider": "codex",
+      "model": "gpt-6.1-sol"
     },
     "review": {
-      "provider": "claude"
+      "provider": "claude",
+      "model": "sonnet"
     },
     "timeoutMs": 600000
   },

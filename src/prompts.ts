@@ -70,6 +70,7 @@ Station boundaries:
 - implementation: change only accepted scope. Never rewrite/delete approved unit tests. Implement the approved scaffold bodies. If a contract needs revision, stop and request a return to unit-tests with requirement-based reasoning. Add planned integration/browser checks.
 - verify: return no file proposals; review evidence and candidate, with business logic, architecture/conventions, edge cases, actual flows, and test integrity as separate concerns.
 - author: summary includes scope deviations and explicit assumptions. Unresolved questions mean no acceptance yet. All unused schema fields should be [] or null.
+- author: if human answers are needed, return questions only: document=null and files, allowedPaths, unitTestFiles, scaffoldFiles, checks=[]. The runner defers any bundled proposals and requests a fresh candidate after answers. If ready to propose a candidate, questions=[].
 - reviewer: inspect actual artifacts, not just author summary. Findings identify rule, concrete passage/file/line or evidence, consequence and proposed correction. No unsupported confidence scores.
 Existing template (fill or remove placeholders and unused optional sections; keep required headings):
 ${template}

@@ -67,6 +67,7 @@ interface RunOptions {
   feedback?: string;
   signal?: AbortSignal;
   observations?: ManualObservation[];
+  onProgress?: (message: string) => void;
 }
 interface ApproveOptions {
   actor: string;
@@ -357,6 +358,7 @@ export class Kitchen {
           config: config.stations[station]?.[role] ?? config.providers[role],
           timeoutMs: config.providers.timeoutMs,
           signal: options.signal,
+          onProgress: options.onProgress,
         });
         if (options.signal?.aborted) throw new Error("Station cancelled.");
         if ((await sourceFingerprint(state.worktree, feature)) !== before)
@@ -373,10 +375,8 @@ export class Kitchen {
       try {
         let output = validateAuthorOutput(await call("author"));
         if (output.questions.length) {
-          if (output.files.length || output.document)
-            throw new Error(
-              "Questions and candidate changes must be separate author responses.",
-            );
+          // Questions take precedence over bundled proposals. Only a fresh
+          // response without questions may reach applyOutput and review.
           for (const question of output.questions) {
             state.conversation.push({
               role: "model",

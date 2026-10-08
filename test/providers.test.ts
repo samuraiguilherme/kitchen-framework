@@ -20,6 +20,27 @@ const author = {
 const review = { summary: "Review", findings: [] };
 
 describe("provider contracts", () => {
+  it.each(["unelevated", "elevated"] as const)(
+    "selects the %s Windows implementation while retaining read-only policy",
+    (mode) => {
+      const invocation = providerInvocation(
+        "codex",
+        "schema",
+        "answer",
+        "author",
+        undefined,
+        undefined,
+        mode,
+      );
+      expect(invocation.args).toContain(`windows.sandbox="${mode}"`);
+      expect(invocation.args[invocation.args.indexOf("--sandbox") + 1]).toBe(
+        "read-only",
+      );
+      expect(invocation.args).not.toContain(
+        "--dangerously-bypass-approvals-and-sandbox",
+      );
+    },
+  );
   it("parses Codex final output and Claude's structured envelope", () => {
     expect(parseProviderOutput("codex", JSON.stringify(author))).toEqual(
       author,
@@ -84,11 +105,32 @@ describe("provider contracts", () => {
     expect(tools).toBe("Read,Glob,Grep");
     expect(invocation.args).toContain("dontAsk");
     expect(invocation.args).toContain("configured-model");
+    expect(
+      JSON.parse(invocation.args[invocation.args.indexOf("--mcp-config") + 1]!),
+    ).toEqual({ mcpServers: {} });
     expect(invocation.args).not.toContain("--dangerously-skip-permissions");
   });
 });
 
 describe("subprocess execution", () => {
+  it("stops the child when evidence capture fails, without reporting a timeout or cancellation", async () => {
+    const result = await runProcess({
+      command: process.execPath,
+      args: ["-e", "console.log('event'); setInterval(()=>{},1000)"],
+      cwd: process.cwd(),
+      timeoutMs: 4000,
+      onOutput() {
+        throw new Error("disk unavailable");
+      },
+    });
+    expect(result.failureReason).toBe(
+      "Output capture failed: disk unavailable",
+    );
+    expect(result.timedOut).toBe(false);
+    expect(result.cancelled).toBe(false);
+    expect(result.stdout).toContain("event");
+    expect(result.code).not.toBe(0);
+  });
   it("passes spaces and shell metacharacters literally", async () => {
     const argument = "a space & $(no-command) `literal`";
     const result = await runProcess({

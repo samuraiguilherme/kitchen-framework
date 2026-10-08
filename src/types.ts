@@ -61,6 +61,7 @@ export interface RoleConfig {
   provider: ProviderName;
   model?: string;
   executable?: string;
+  windowsSandbox?: "elevated" | "unelevated";
 }
 export interface Profile {
   version?: string;
@@ -147,6 +148,7 @@ export interface ProviderRequest {
   config: RoleConfig;
   timeoutMs: number;
   signal?: AbortSignal;
+  onProgress?: (message: string) => void;
 }
 export type Provider = (request: ProviderRequest) => Promise<unknown>;
 export interface PrInput {

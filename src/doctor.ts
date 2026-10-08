@@ -1,10 +1,18 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { loadConfig } from "./config.ts";
 import { runProcess } from "./process.ts";
-import type { CheckResult } from "./types.ts";
+import { probeProvider } from "./providers.ts";
+import type { CheckResult, RoleConfig } from "./types.ts";
 
-export async function doctor(root: string): Promise<CheckResult[]> {
+export async function doctor(
+  root: string,
+  options: {
+    signal?: AbortSignal;
+    onProgress?: (message: string) => void;
+  } = {},
+): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
   results.push({
     id: "node-22",
@@ -13,6 +21,28 @@ export async function doctor(root: string): Promise<CheckResult[]> {
     reason: process.versions.node,
   });
   const config = loadConfig(root);
+  const pairs: Array<{
+    config: RoleConfig;
+    roles: string[];
+    prerequisites: string[];
+  }> = [];
+  const addPair = (role: RoleConfig, label: string) => {
+    const existing = pairs.find(
+      (pair) =>
+        pair.config.provider === role.provider &&
+        pair.config.model === role.model &&
+        pair.config.executable === role.executable &&
+        pair.config.windowsSandbox === role.windowsSandbox,
+    );
+    if (existing) existing.roles.push(label);
+    else pairs.push({ config: role, roles: [label], prerequisites: [] });
+  };
+  addPair(config.providers.author, "providers.author");
+  addPair(config.providers.review, "providers.review");
+  for (const [station, roles] of Object.entries(config.stations)) {
+    if (roles.author) addPair(roles.author, `stations.${station}.author`);
+    if (roles.review) addPair(roles.review, `stations.${station}.review`);
+  }
   const packageFile = path.join(root, "package.json");
   const pinned = existsSync(packageFile)
     ? JSON.parse(readFileSync(packageFile, "utf8")).packageManager?.replace(
@@ -29,25 +59,6 @@ export async function doctor(root: string): Promise<CheckResult[]> {
       args: ["rev-parse", "--verify", config.base],
       required: true,
     },
-    { id: "codex-cli", command: "codex", args: ["--version"], required: true },
-    {
-      id: "codex-auth",
-      command: "codex",
-      args: ["login", "status"],
-      required: true,
-    },
-    {
-      id: "claude-cli",
-      command: "claude",
-      args: ["--version"],
-      required: true,
-    },
-    {
-      id: "claude-auth",
-      command: "claude",
-      args: ["auth", "status", "--json"],
-      required: true,
-    },
     {
       id: "github-auth",
       command: "gh",
@@ -55,12 +66,52 @@ export async function doctor(root: string): Promise<CheckResult[]> {
       required: false,
     },
   ];
+  const executables: Array<{
+    provider: RoleConfig["provider"];
+    command: string;
+    prefix: string;
+  }> = [];
+  for (const pair of pairs) {
+    const provider = pair.config.provider;
+    const command = pair.config.executable ?? provider;
+    let entry = executables.find(
+      (e) => e.provider === provider && e.command === command,
+    );
+    if (!entry) {
+      const count = executables.filter((e) => e.provider === provider).length;
+      entry = {
+        provider,
+        command,
+        prefix: provider + (count ? `-${count + 1}` : ""),
+      };
+      executables.push(entry);
+      checks.push(
+        {
+          id: `${entry.prefix}-cli`,
+          command,
+          args: ["--version"],
+          required: true,
+        },
+        {
+          id: `${entry.prefix}-auth`,
+          command,
+          args:
+            provider === "codex"
+              ? ["login", "status"]
+              : ["auth", "status", "--json"],
+          required: true,
+        },
+      );
+    }
+    pair.prerequisites = [`${entry.prefix}-cli`, `${entry.prefix}-auth`];
+  }
   const settled = await Promise.allSettled(
     checks.map(async (check) => {
       const result = await runProcess({
         ...check,
         cwd: root,
         timeoutMs: 10000,
+        signal: options.signal,
       });
       const failed =
         result.code !== 0 ||
@@ -71,6 +122,7 @@ export async function doctor(root: string): Promise<CheckResult[]> {
           : "Command unavailable, authentication failed, or pinned version differs."
         : result.stdout.trim().slice(0, 200) || "Available";
       let status = failed ? "failed" : "passed";
+      if (check.id.endsWith("-cli")) reason = `${check.command}: ${reason}`;
       if (
         check.id === "github-auth" &&
         result.code === 0 &&
@@ -80,7 +132,7 @@ export async function doctor(root: string): Promise<CheckResult[]> {
         status = "failed";
         reason = "Active account differs from configured intended username.";
       }
-      if (check.id === "claude-auth" && result.code === 0) {
+      if (/^claude(?:-\d+)?-auth$/.test(check.id) && result.code === 0) {
         try {
           if (!JSON.parse(result.stdout).loggedIn) {
             status = "failed";
@@ -106,6 +158,44 @@ export async function doctor(root: string): Promise<CheckResult[]> {
             reason: "Diagnostic failed.",
           },
     );
+  }
+  const runDir = path.join(root, ".kitchen", "doctor", randomUUID());
+  for (const [index, pair] of pairs.entries()) {
+    const label = `${pair.config.provider} model=${pair.config.model ?? "CLI default (inherited)"}${pair.config.provider === "codex" ? `; windowsSandbox=${pair.config.windowsSandbox ?? "CLI default (inherited)"}` : ""}; ${pair.roles.join(", ")}`;
+    const check: CheckResult = {
+      id: `${pair.config.provider}-model-${index + 1}`,
+      required: true,
+      status: "unverified",
+    };
+    const unavailable = pair.prerequisites.filter(
+      (id) => results.find((r) => r.id === id)?.status !== "passed",
+    );
+    if (unavailable.length)
+      check.reason = `${label}; request skipped because ${unavailable.join(", ")} did not pass.`;
+    else if (options.signal?.aborted)
+      check.reason = `${label}; cancelled before request.`;
+    else {
+      const probeDir = path.join(runDir, check.id);
+      options.onProgress?.(
+        `Checking ${label} with a small hosted request (uses model quota).`,
+      );
+      try {
+        await probeProvider(
+          pair.config,
+          probeDir,
+          Math.min(config.providers.timeoutMs, 60000),
+          options.signal,
+        );
+        check.status = "passed";
+        check.reason = `${label}; structured request succeeded.`;
+      } catch (error) {
+        check.status = "failed";
+        check.reason = `${label}; ${error instanceof Error ? error.message : String(error)}`;
+      }
+      const evidence = path.join(probeDir, "review-process.json");
+      if (existsSync(evidence)) check.evidence = evidence;
+    }
+    results.push(check);
   }
   results.push({
     id: "github-intended-account",

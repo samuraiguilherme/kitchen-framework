@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -199,7 +205,7 @@ describe("station workflow", () => {
     );
     await expect(kitchen.run("answer", "spec")).rejects.toThrow(/intent/i);
   });
-  it("persists human answers separately and asks before authoring", async () => {
+  it("pauses for questions without applying a bundled draft or file proposals", async () => {
     const setup = fixture();
     let questioned = false;
     const provider = async (request: {
@@ -210,14 +216,147 @@ describe("station workflow", () => {
       if (request.role === "author" && !questioned) {
         questioned = true;
         return {
-          summary: "Need audience",
+          ...(await setup.provider(request)),
           questions: [{ id: "audience", text: "Who needs the answer?" }],
-          document: null,
-          files: [],
-          allowedPaths: [],
-          checks: [],
-          unitTestFiles: [],
-          scaffoldFiles: [],
+          document: "Unresolved draft; not ready for review.",
+          files: [
+            {
+              path: "src/answer.ts",
+              action: "delete",
+              content: null,
+              kind: "implementation",
+            },
+          ],
+        };
+      }
+      return setup.provider(request);
+    };
+    const kitchen = new Kitchen({
+      root: setup.root,
+      provider,
+      github: setup.gateway,
+    });
+    const started = await kitchen.start("answer", { request: "Return 42." });
+    const document = path.join(
+      started.worktree,
+      "docs/features/answer/intent.md",
+    );
+    mkdirSync(path.dirname(document), { recursive: true });
+    writeFileSync(document, documents.intent!);
+
+    await kitchen.run("answer", "intent");
+    const state = await kitchen.status("answer");
+    expect(state.stations.intent?.status).toBe("awaiting-input");
+    expect(state.stations.intent?.output?.questions).toEqual([
+      { id: "audience", text: "Who needs the answer?" },
+    ]);
+    expect(state.conversation).toContainEqual(
+      expect.objectContaining({ role: "model", text: "Who needs the answer?" }),
+    );
+    expect(readFileSync(document, "utf8")).toBe(documents.intent);
+    expect(
+      readFileSync(path.join(state.worktree, "src/answer.ts"), "utf8"),
+    ).toBe("export const answer = 0;\n");
+    expect(setup.calls.map((call) => call.role)).toEqual(["author"]);
+    await expect(
+      kitchen.approve("answer", "intent", { actor: "chef" }),
+    ).rejects.toThrow();
+
+    const next = await kitchen.run("answer", "intent", {
+      feedback: "Company owners",
+    });
+    expect(next.stations.intent?.status).toBe("awaiting-approval");
+    expect(next.conversation).toContainEqual(
+      expect.objectContaining({ role: "operator", text: "Company owners" }),
+    );
+    expect(setup.calls[1]?.prompt).toContain(
+      "Human revision request:\nCompany owners",
+    );
+    expect(setup.calls.map((call) => call.role)).toEqual([
+      "author",
+      "author",
+      "review",
+    ]);
+  });
+  it.each([null, "Unresolved draft; not ready for review."])(
+    "persists human answers separately and asks before authoring (draft: %s)",
+    async (draft) => {
+      const setup = fixture();
+      let questioned = false;
+      const provider = async (request: {
+        station: string;
+        role: string;
+        prompt: string;
+      }) => {
+        if (request.role === "author" && !questioned) {
+          questioned = true;
+          return {
+            summary: "Need audience",
+            questions: [{ id: "audience", text: "Who needs the answer?" }],
+            document: draft,
+            files: [],
+            allowedPaths: [],
+            checks: [],
+            unitTestFiles: [],
+            scaffoldFiles: [],
+          };
+        }
+        return setup.provider(request);
+      };
+      const kitchen = new Kitchen({
+        root: setup.root,
+        provider,
+        github: setup.gateway,
+      });
+      const started = await kitchen.start("answer", { request: "Return 42." });
+      const document = path.join(
+        started.worktree,
+        "docs/features/answer/intent.md",
+      );
+      await kitchen.run("answer", "intent", {
+        ask: async () => {
+          expect(existsSync(document)).toBe(false);
+          return "Company owners";
+        },
+      });
+      const state = await kitchen.status("answer");
+      expect(state.conversation).toContainEqual(
+        expect.objectContaining({ role: "operator", text: "Company owners" }),
+      );
+      expect(state.stations.intent?.status).toBe("awaiting-approval");
+      expect(readFileSync(document, "utf8")).toBe(documents.intent);
+      expect(setup.calls.map((call) => call.role)).toEqual([
+        "author",
+        "review",
+      ]);
+    },
+  );
+  it("defers a bundled candidate when more questions remain after guided answers", async () => {
+    const setup = fixture();
+    let authorCalls = 0;
+    const provider = async (request: {
+      station: string;
+      role: string;
+      prompt: string;
+    }) => {
+      if (request.role === "author") {
+        authorCalls++;
+        return {
+          ...(await setup.provider(request)),
+          questions: [
+            authorCalls === 1
+              ? { id: "audience", text: "Who needs the answer?" }
+              : { id: "outcome", text: "What outcome do they need?" },
+          ],
+          document: "Unresolved draft; not ready for review.",
+          files: [
+            {
+              path: "src/answer.ts",
+              action: "write",
+              content: "export const answer = 42;\n",
+              kind: "implementation",
+            },
+          ],
         };
       }
       return setup.provider(request);
@@ -228,14 +367,34 @@ describe("station workflow", () => {
       github: setup.gateway,
     });
     await kitchen.start("answer", { request: "Return 42." });
+    const asked: string[] = [];
     await kitchen.run("answer", "intent", {
-      ask: async () => "Company owners",
+      ask: async (question) => {
+        asked.push(question);
+        return "Company owners";
+      },
     });
     const state = await kitchen.status("answer");
-    expect(state.conversation).toContainEqual(
+    expect(state.stations.intent?.status).toBe("awaiting-input");
+    expect(state.stations.intent?.output?.questions).toEqual([
+      { id: "outcome", text: "What outcome do they need?" },
+    ]);
+    expect(state.conversation.slice(1)).toEqual([
+      expect.objectContaining({ role: "model", text: "Who needs the answer?" }),
       expect.objectContaining({ role: "operator", text: "Company owners" }),
-    );
-    expect(state.stations.intent?.status).toBe("awaiting-approval");
+      expect.objectContaining({
+        role: "model",
+        text: "What outcome do they need?",
+      }),
+    ]);
+    expect(asked).toEqual(["Who needs the answer?"]);
+    expect(
+      existsSync(path.join(state.worktree, "docs/features/answer/intent.md")),
+    ).toBe(false);
+    expect(
+      readFileSync(path.join(state.worktree, "src/answer.ts"), "utf8"),
+    ).toBe("export const answer = 0;\n");
+    expect(setup.calls.map((call) => call.role)).toEqual(["author", "author"]);
   });
   it("marks an edited accepted artifact and its dependents stale", async () => {
     const { kitchen } = fixture();

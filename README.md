@@ -16,11 +16,17 @@ pnpm kitchen approve completion-notifications intent --actor your-name --minutes
 
 Authenticate the CLIs separately when doctor reports missing login: `codex login` and `claude auth login`. Doctor does not change accounts or log you in. GitHub is optional until publication. An explicit intended `github.account` in root `kitchen.config.json` is mandatory before pushing; the runner never selects an account for you.
 
+Doctor checks the configured CLI executables and logins, then makes a small structured hosted request for every distinct provider/model/executable/Windows-sandbox combination, including station overrides. These requests consume model quota. Each has a maximum 60-second timeout (or the smaller configured provider timeout); Ctrl+C cancels them. A login alone does not establish model access. Rejected models, quota/network errors, timeouts, and invalid responses fail readiness; skipped requests remain unverified and also cause a nonzero exit.
+
+Model checks identify the configured model and roles. When `model` is omitted, they say `CLI default (inherited)` and test that choice without adding an override. Probes run in separate scratch directories without the feature request or repository instructions. Raw evidence is retained under `.kitchen/doctor/<run-id>/`. Doctor does not rerun a feature station.
+
 Run from the monorepo or a kitchen worktree: the CLI resolves the common repository root. `origin/develop` must exist locally. Start pins that ref without fetching or changing your working checkout. Publication compares it with the remote develop branch again.
 
 ## Work through each station
 
 Run and accept each row before advancing. One invocation makes one authoring/revision pass and one independent review, then pauses. Guided question responses precede the authoring pass. If additional questions remain, status is `awaiting-input`; answer using a subsequent `--feedback-file` or interactive run.
+
+Unresolved author questions take precedence over any bundled draft or file proposals. The runner retains the response as local evidence but applies no changes or checks and skips independent review until a fresh candidate contains no questions. Interactive runs collect answers before requesting that candidate; non-interactive runs pause with `awaiting-input`.
 
 | Increment | Station        | Reviewable result                                                                          |
 | --------- | -------------- | ------------------------------------------------------------------------------------------ |
@@ -73,16 +79,51 @@ Root `kitchen.config.json` supplies versioned finite profiles for the repository
 
 ```json
 {
+  "providers": {
+    "author": { "provider": "codex", "model": "gpt-6.1-sol" },
+    "review": { "provider": "claude", "model": "sonnet" },
+    "timeoutMs": 600000
+  },
   "stations": {
     "spec": {
-      "author": { "provider": "claude" },
-      "review": { "provider": "codex" }
+      "author": { "provider": "claude", "model": "sonnet" },
+      "review": { "provider": "codex", "model": "gpt-6.1-sol" }
     }
   }
 }
 ```
 
-Merge overrides into the existing configuration. Omit `model` to inherit the CLI's model choice, or set it on either role. An optional `executable` selects a trusted CLI path (also used by the fake-executable tests). Provider usage/error metadata is retained when the CLI emits it.
+Edit the `providers.author.model` and `providers.review.model` fields in root `kitchen.config.json` to select models independently of your global CLI settings. The checked-in configuration makes the existing Codex selection explicit; it does not guarantee that your account/client can use it. Use a model available to your account, then run `pnpm kitchen doctor` to establish access. The doctor and feature stations use the same model settings and request adapter. There is no silent fallback when a selected model is rejected.
+
+For machine-specific settings, create root `kitchen.config.local.json` (Git-ignored). It overrides shared settings, merging provider-role fields and station-role fields while preserving other settings. For example, select the Codex app's bundled CLI without putting a personal path in the shared configuration:
+
+```json
+{
+  "providers": {
+    "author": {
+      "executable": "C:/path/to/Codex/bin/runtime-id/codex.exe"
+    }
+  }
+}
+```
+
+The model and provider still come from the shared author settings. The chosen CLI reuses its saved login; Kitchen does not copy credentials, switch accounts, or require an API key for ChatGPT sign-in. A global `codex` command can resolve to an older CLI than the desktop app uses. If a model works in the app but the CLI rejects it, compare the versions and test the app's bundled executable. Doctor prints the selected executable with its version. Update the local executable path if an app update moves it; configure any additional Codex station roles the same way when needed.
+
+To run Codex's Windows sandbox without administrator setup, add `"windowsSandbox": "unelevated"` to each Codex role you use, normally in `kitchen.config.local.json`:
+
+```json
+{
+  "providers": {
+    "author": { "windowsSandbox": "unelevated" }
+  }
+}
+```
+
+Merge this field with any existing local executable setting. Kitchen passes `-c windows.sandbox="unelevated"` to Codex for both model probes and station requests; its `--sandbox read-only` policy stays in place. The setting changes only Kitchen's Codex child processes and keeps the existing ChatGPT login. Set any explicit Codex station role overrides separately. Omit the field to inherit Codex's default, or select `"elevated"` explicitly. Doctor and process evidence identify the requested selection; model-only doctor probes do not establish tool readiness.
+
+Codex's [unelevated mode](https://learn.chatgpt.com/docs/windows/windows-sandbox) uses a restricted token with ACL filesystem boundaries and weaker network isolation than elevated mode. Administrator-managed requirements may disallow it; Kitchen reports the provider's rejection instead of overriding those requirements. This Windows-only option does not apply to Claude.
+
+Merge overrides into the existing configuration. A station role overrides that entire default role, so include its model explicitly when desired. Omit `model` to inherit the CLI's model choice. Empty model strings are rejected. An optional `executable` selects a trusted CLI path (also used by the fake-executable tests). Provider usage/error metadata is retained when the CLI emits it. Provider failures include structured stdout errors as well as stderr diagnostics.
 
 Each execution has a finite timeout and command/argument array. Unit/integration/browser profiles require JSON reports with executed counts. Plain command profiles establish lint/types/architecture evidence and cannot establish behavioral AC coverage. New dependencies must already be available in the local pnpm store or be installed deliberately before offline baseline setup can succeed.
 
@@ -157,6 +198,10 @@ Label JSON maps IDs such as `spec-acceptable` and `spec-flawed` to `acceptable` 
 
 Ctrl+C cancels owned provider/check subprocess trees. Finite timeouts prevent unattended hangs. Per-feature process locks reject concurrent mutations; the next command recovers a dead process's running station as failed, requiring a rerun. Provider/schema failures remain inspectable and retryable. Raw local files are trusted operator storage, not an access-control boundary.
 
+`run` prints provider/station progress to stderr, including Codex tool starts/results and a 15-second heartbeat. Its final JSON remains on stdout. Each provider directory under `runs/<run-id>/` gets `<role>-events.jsonl` (raw stdout) and `<role>-stderr.log`, appended during execution; `<role>-process.json` records the final result and any `failureReason`. Claude currently supplies a final JSON response, so its intermediate progress is the heartbeat.
+
+Known Codex Windows sandbox setup failures stop the owned provider process promptly and mark the station failed as an infrastructure error. Ordinary tool failures remain available for agent recovery. When the error says `setup refresh had errors`, correlate the run's stderr timestamp with `%USERPROFILE%\.codex\.sandbox\sandbox.<date>.log` for the underlying Windows error. A successful model-only doctor probe does not verify sandbox tool execution.
+
 Publication rechecks source, accepted tests, branch, local/remote base, every origin fetch/push destination and intended GitHub identity. It uses a body file and explicit repository/base/head. No force pushes. A remote/base reconciliation that changes the candidate requires renewed approvals and verification. Retrying after an unknown create result recovers an existing open PR before creating another.
 
 ## Validate the framework
@@ -167,6 +212,6 @@ pnpm --filter @hirebus/kitchen check:types
 pnpm --filter @hirebus/kitchen lint
 ```
 
-Tests use temporary Git repositories, fake provider executables, fake GitHub writes and a local preview server. No paid hosted model calls or real PRs run in the test suite. Live smoke/calibration is opt-in; model quality remains to be calibrated by you.
+Tests use temporary Git repositories, fake provider executables, fake GitHub writes and a local preview server. No paid hosted model calls or real PRs run in the test suite. Hosted availability checks run when you invoke `doctor`; live verifier calibration requires `evaluate --live`. Model quality remains to be calibrated by you.
 
-Provider interfaces follow [Codex non-interactive execution](https://learn.chatgpt.com/docs/non-interactive-mode), [Codex configuration](https://learn.chatgpt.com/docs/config-file/config-reference), [Claude headless execution](https://code.claude.com/docs/en/headless) and [Claude CLI flags](https://code.claude.com/docs/en/cli-reference). Adapters use fresh read-only sessions, disable user hooks/plugins/MCP integrations, and preserve model defaults. Machine-managed provider policy remains trusted infrastructure.
+Provider interfaces follow [Codex non-interactive execution](https://learn.chatgpt.com/docs/non-interactive-mode), [Codex configuration](https://learn.chatgpt.com/docs/config-file/config-reference), [Claude headless execution](https://code.claude.com/docs/en/headless) and [Claude CLI flags](https://code.claude.com/docs/en/cli-reference). Adapters use fresh read-only sessions, disable user hooks/plugins/MCP integrations, and use configured models or inherited CLI defaults. Machine-managed provider policy remains trusted infrastructure.
