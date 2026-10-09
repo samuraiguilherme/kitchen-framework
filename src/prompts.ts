@@ -37,6 +37,7 @@ export function stationPrompt(
   role: "author" | "review",
   context: string,
   feedback = "",
+  reviewEnabled = false,
 ): string {
   const templateFile = path.join(
     state.worktree,
@@ -53,7 +54,7 @@ Fresh session. Read-only tools. Do not execute checks, git writes, hooks, extern
 The runner applies your structured file proposals after validating scope and runs approved check profiles.
 Never claim a check passed without the runner evidence. Clearly distinguish assumptions from human answers.
 Model-proposed product decisions need human resolution; ask focused questions when a decision is missing.
-One authoring/revision pass, followed by ${station === "intent" ? "human approval" : "independent review"}. Return the exact requested JSON schema; no Markdown fences.
+One authoring/revision pass, followed by ${reviewEnabled ? "independent review and human approval" : "human approval"}. Return the exact requested JSON schema; no Markdown fences.
 Feature: ${state.feature}
 Original request: ${state.request}
 Optional issue: ${state.issue ?? "none"}
@@ -69,6 +70,7 @@ Station boundaries:
 - unit-tests: propose unit tests first, and only accepted minimal scaffoldFiles if necessary to reach behavioral assertions. No feature logic. Name tests with stable AC-n IDs. Minimal scaffolds may contain signatures/types and throw-only bodies.
 - implementation: change only accepted scope. Never rewrite/delete approved unit tests. Implement the approved scaffold bodies. If a contract needs revision, stop and request a return to unit-tests with requirement-based reasoning. Add planned integration/browser checks.
 - verify: return no file proposals; review evidence and candidate, with business logic, architecture/conventions, edge cases, actual flows, and test integrity as separate concerns.
+- publish: inspect the exact local publication preview, candidate diff, accepted documents, tests-first history and verification. Return review findings only; the runner performs publication after human approval.
 - author: summary includes scope deviations and explicit assumptions. Unresolved questions mean no acceptance yet. All unused schema fields should be [] or null.
 - author: if human answers are needed, return questions only: document=null and files, allowedPaths, unitTestFiles, scaffoldFiles, checks=[]. The runner defers any bundled proposals and requests a fresh candidate after answers. If ready to propose a candidate, questions=[].
 - reviewer: inspect actual artifacts, not just author summary. Findings identify rule, concrete passage/file/line or evidence, consequence and proposed correction. No unsupported confidence scores.

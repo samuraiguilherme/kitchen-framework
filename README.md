@@ -1,6 +1,6 @@
 # Local Development Kitchen
 
-A local Node 22 / TypeScript runner for a human-approved feature workflow. Codex authors and Claude reviews by default. Both providers read the candidate and return structured proposals; the runner writes files and owns executable checks, approvals, Git commits and draft PR publication.
+A local Node 22 / TypeScript runner for a human-approved feature workflow. Codex authors by default; independent model review is opt-in at each station, with Claude as the default reviewer when enabled. Providers read the candidate and return structured proposals; the runner writes files and owns executable checks, approvals, Git commits and draft PR publication.
 
 ## Start locally
 
@@ -16,7 +16,7 @@ pnpm kitchen approve completion-notifications intent --actor your-name --minutes
 
 Authenticate the CLIs separately when doctor reports missing login: `codex login` and `claude auth login`. Doctor does not change accounts or log you in. GitHub is optional until publication. An explicit intended `github.account` in root `kitchen.config.json` is mandatory before pushing; the runner never selects an account for you.
 
-Doctor checks the configured CLI executables and logins, then makes a small structured hosted request for every distinct provider/model/executable/Windows-sandbox combination, including station overrides. The unused `stations.intent.review` override is ignored. These requests consume model quota. Each has a maximum 60-second timeout (or the smaller configured provider timeout); Ctrl+C cancels them. A login alone does not establish model access. Rejected models, quota/network errors, timeouts, and invalid responses fail readiness; skipped requests remain unverified and also cause a nonzero exit.
+Doctor checks the CLI executables and logins used by station authors and enabled reviewers, then makes a small structured hosted request for every distinct provider/model/executable/Windows-sandbox combination, including station overrides. Disabled reviewer settings and the unused publish author are ignored. These requests consume model quota. Each has a maximum 60-second timeout (or the smaller configured provider timeout); Ctrl+C cancels them. A login alone does not establish model access. Rejected models, quota/network errors, timeouts, and invalid responses fail readiness; skipped requests remain unverified and also cause a nonzero exit.
 
 Model checks identify the configured model and roles. When `model` is omitted, they say `CLI default (inherited)` and test that choice without adding an override. Probes run in separate scratch directories without the feature request or repository instructions. Raw evidence is retained under `.kitchen/doctor/<run-id>/`. Doctor does not rerun a feature station.
 
@@ -24,7 +24,7 @@ Run from the monorepo or a kitchen worktree: the CLI resolves the common reposit
 
 ## Work through each station
 
-Run and accept each row before advancing. Intent makes one authoring/revision pass, validates the document, then pauses for human approval without an independent model review. Later stations also run an independent review before pausing. Guided question responses precede the authoring pass. If additional questions remain, status is `awaiting-input`; answer using a subsequent `--feedback-file` or interactive run.
+Run and accept each row before advancing. Each execution station makes one authoring/revision pass and validates its output, then pauses for human approval. Independent model review runs only when that station's `reviewEnabled` is `true`. This opt-in also applies to intent and the publish preview. Guided question responses precede the authoring pass. If additional questions remain, status is `awaiting-input`; answer using a subsequent `--feedback-file` or interactive run.
 
 When resuming `awaiting-input`, an interactive `run` asks the saved questions before calling the author again. Each answer is saved immediately, so interrupted input resumes at the remaining questions. A non-interactive `run` without feedback returns the pending state without another provider call. Feedback is retained in the conversation even when the author asks more questions.
 
@@ -59,15 +59,15 @@ Documents live in the feature worktree at `docs/features/<feature>/`: `intent.md
 
 The CLI shows station status, the absolute document path, the approval commit and the next command. An `awaiting-input` result lists outstanding questions and has no new candidate document. Add `--json` to `start`, `run`, `approve` or `status` for the complete machine-readable state.
 
-Edit documents in the feature worktree. Frontmatter status is descriptive; it never grants approval. Rerun a station after edits so the edited artifact is validated before acceptance, including independent review for stations after intent. Use `run --feedback-file <path>` to direct revisions. Accepted document/input changes invalidate later approvals while preserving files.
+Edit documents in the feature worktree. Frontmatter status is descriptive; it never grants approval. Rerun a station after edits so the edited artifact is validated before acceptance, including independent review when enabled. Use `run --feedback-file <path>` to direct revisions. Accepted document/input changes invalidate later approvals while preserving files.
 
 The plan and test plan contain a visible JSON execution manifest appended by the runner. It records exact file scope, check profiles, test files, scaffold files and RED/GREEN expectations. Review it with the prose. Wildcards are not accepted as write scope. The author reads the existing intent/spec/plan templates and relevant repository instructions.
 
 ## Approvals and disputed findings
 
-The local approval record binds the reviewed artifact, upstream approvals, policy/rubric contents, check profiles, raw execution evidence and relevant source fingerprint. Edits after review require a new run. A required failed/unverified check cannot be accepted through a reviewer-resolution file.
+The local approval record binds the validated artifact, upstream approvals, policy/rubric contents, effective provider and review settings, check profiles, raw execution evidence and relevant source fingerprint. Edits after validation or changes to `reviewEnabled` require a new run (or a new publish preview). A required failed/unverified check cannot be accepted through a reviewer-resolution file.
 
-`approve` checks the station status before asking for your name. An `awaiting-input` station is a normal workflow pause: the CLI lists the saved questions and the next run command, records no approval, and exits successfully. `--json` returns that unchanged pending state. Supply the answers through an interactive run or `run --feedback-file <path>`. Intent reaches `awaiting-approval` after authoring and document validation; later stations also require independent review. Failed, stale or unstarted stations still produce an error when approval is attempted.
+`approve` checks the station status before asking for your name. An `awaiting-input` station is a normal workflow pause: the CLI lists the saved questions and the next run command, records no approval, and exits successfully. `--json` returns that unchanged pending state. Supply the answers through an interactive run or `run --feedback-file <path>`. Execution stations reach `awaiting-approval` after authoring, validation and any enabled independent review; publish reaches it after preparing and optionally reviewing the exact preview. Failed, stale or unstarted stations still produce an error when approval is attempted.
 
 To dispute a reviewer finding, create a JSON object mapping its finding ID to your evidence-based reason, then use `approve --resolutions <file> --actor <name>`. This records your disagreement. Confirmed blockers require correction and a new run. Profile/coverage/scope failures cannot be waived. `--minutes` records review effort in the report.
 
@@ -79,7 +79,7 @@ A new-behavior check needs assertion failures for every mapped AC-n. Syntax/impo
 
 Minimal scaffolds are limited to new interfaces: types/signatures with throw-only bodies or `return undefined`. They cannot replace baseline production modules. The coding station can implement those bodies. The runner hashes approved unit tests and preserves a tests-first commit before implementation.
 
-Implementation proposals that rewrite approved unit tests are rejected before any proposed file is written. To revise accepted tests, return to `unit-tests` with `--feedback "AC-2: <requirement-based reason>"`, independently review and accept again. Revised tests run at the original base; the original checkpoint stays recorded and revision commits are listed separately. Implementation and verification must run again.
+Implementation proposals that rewrite approved unit tests are rejected before any proposed file is written. To revise accepted tests, return to `unit-tests` with `--feedback "AC-2: <requirement-based reason>"`, run any enabled independent review and accept again. Revised tests run at the original base; the original checkpoint stays recorded and revision commits are listed separately. Implementation and verification must run again.
 
 ## Configure providers and package checks
 
@@ -94,12 +94,15 @@ Root `kitchen.config.json` supplies versioned finite profiles for the repository
   },
   "stations": {
     "spec": {
+      "reviewEnabled": true,
       "author": { "provider": "claude", "model": "sonnet" },
       "review": { "provider": "codex", "model": "gpt-6.1-sol" }
     }
   }
 }
 ```
+
+Set `stations.<station>.reviewEnabled` to `true` to opt that station into independent model review. All eight stations default to `false`, including when the flag is omitted; the checked-in configuration lists each flag explicitly. A `review` provider/model override selects the reviewer but does not enable review. Enabled stations use their `review` override or fall back to `providers.review`. Human approval, document validation, tests-first history and required executable checks apply regardless of the flag. Explicit `evaluate --live` calibration still runs independently of station opt-ins.
 
 Edit the `providers.author.model` and `providers.review.model` fields in root `kitchen.config.json` to select models independently of your global CLI settings. The checked-in configuration makes the existing Codex selection explicit; it does not guarantee that your account/client can use it. Use a model available to your account, then run `pnpm kitchen doctor` to establish access. The doctor and feature stations use the same model settings and request adapter. There is no silent fallback when a selected model is rejected.
 

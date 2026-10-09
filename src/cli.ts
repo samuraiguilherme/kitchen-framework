@@ -21,7 +21,8 @@ const usage = `Local Development Kitchen
   pnpm kitchen publish <feature> --preview
   pnpm kitchen publish <feature>
 Stations: ${stationOrder.join(", ")}
-Every run pauses for review. Publication requires its own preview and approval.
+Every run pauses for human approval. Model review is opt-in per station.
+Publication requires its own preview and approval.
 Add --json to start, run, approve or status for raw feature state.`;
 async function main(): Promise<void> {
   const { positionals, values } = parseArgs({
@@ -213,7 +214,11 @@ async function main(): Promise<void> {
     } else if (command === "publish")
       console.log(
         JSON.stringify(
-          await kitchen.publish(feature, { preview: values.preview }),
+          await kitchen.publish(feature, {
+            preview: values.preview,
+            signal: controller.signal,
+            onProgress: (message) => console.error(message),
+          }),
           null,
           2,
         ),

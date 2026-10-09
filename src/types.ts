@@ -87,7 +87,10 @@ export interface Config {
   github: { repository: string; account?: string };
   providers: { author: RoleConfig; review: RoleConfig; timeoutMs: number };
   stations: Partial<
-    Record<Station, { author?: RoleConfig; review?: RoleConfig }>
+    Record<
+      Station,
+      { author?: RoleConfig; review?: RoleConfig; reviewEnabled?: boolean }
+    >
   >;
   profiles: Record<string, Profile>;
 }

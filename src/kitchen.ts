@@ -140,9 +140,20 @@ export class Kitchen {
       ? await sourceFingerprint(state.worktree, state.feature)
       : null;
     const config = loadConfig(this.root);
+    const stationConfig = config.stations[station];
     const policy = {
       base: config.base,
-      provider: config.stations[station] ?? config.providers,
+      provider: {
+        author:
+          station === "publish"
+            ? undefined
+            : (stationConfig?.author ?? config.providers.author),
+        reviewEnabled: stationConfig?.reviewEnabled === true,
+        review: stationConfig?.reviewEnabled
+          ? (stationConfig.review ?? config.providers.review)
+          : undefined,
+        timeoutMs: config.providers.timeoutMs,
+      },
       profiles: [
         "test-plan",
         "unit-tests",
@@ -303,6 +314,56 @@ export class Kitchen {
       artifactFiles: [],
     };
   }
+  private async callProvider(
+    state: FeatureState,
+    station: Station,
+    role: "author" | "review",
+    runDir: string,
+    options: RunOptions,
+    suffix = "",
+  ): Promise<unknown> {
+    if (options.signal?.aborted) throw new Error("Station cancelled.");
+    const config = loadConfig(this.root);
+    const context = await this.context(state);
+    const before = await sourceFingerprint(state.worktree, state.feature);
+    const artifacts = digest(
+      state.worktree,
+      state.stations[station]?.artifactFiles ?? [],
+    );
+    const output = await this.provider({
+      station,
+      role,
+      prompt: stationPrompt(
+        state,
+        station,
+        role,
+        context,
+        options.feedback,
+        config.stations[station]?.reviewEnabled,
+      ),
+      cwd: state.worktree,
+      runDir: path.join(runDir, role + suffix),
+      config: config.stations[station]?.[role] ?? config.providers[role],
+      timeoutMs: config.providers.timeoutMs,
+      signal: options.signal,
+      onProgress: options.onProgress,
+    });
+    if (options.signal?.aborted) throw new Error("Station cancelled.");
+    if (
+      (await sourceFingerprint(state.worktree, state.feature)) !== before ||
+      digest(state.worktree, state.stations[station]?.artifactFiles ?? []) !==
+        artifacts
+    )
+      throw new Error(
+        "Provider changed repository contents outside the runner.",
+      );
+    mkdirSync(path.join(runDir, role + suffix), { recursive: true });
+    writeFileSync(
+      path.join(runDir, role + suffix, "validated-output.json"),
+      JSON.stringify(output, null, 2),
+    );
+    return output;
+  }
   private invalidateAfter(state: FeatureState, station: Station): void {
     for (const next of stationOrder.slice(stationOrder.indexOf(station) + 1))
       if (state.stations[next]) state.stations[next]!.status = "stale";
@@ -374,39 +435,8 @@ export class Kitchen {
       );
       mkdirSync(runDir, { recursive: true });
       const config = loadConfig(this.root);
-      const call = async (role: "author" | "review", suffix = "") => {
-        if (options.signal?.aborted) throw new Error("Station cancelled.");
-        const context = await this.context(state);
-        const before = await sourceFingerprint(state.worktree, feature);
-        const output = await this.provider({
-          station,
-          role,
-          prompt: stationPrompt(
-            state,
-            station,
-            role,
-            context,
-            options.feedback,
-          ),
-          cwd: state.worktree,
-          runDir: path.join(runDir, role + suffix),
-          config: config.stations[station]?.[role] ?? config.providers[role],
-          timeoutMs: config.providers.timeoutMs,
-          signal: options.signal,
-          onProgress: options.onProgress,
-        });
-        if (options.signal?.aborted) throw new Error("Station cancelled.");
-        if ((await sourceFingerprint(state.worktree, feature)) !== before)
-          throw new Error(
-            "Provider changed repository contents outside the runner.",
-          );
-        mkdirSync(path.join(runDir, role + suffix), { recursive: true });
-        writeFileSync(
-          path.join(runDir, role + suffix, "validated-output.json"),
-          JSON.stringify(output, null, 2),
-        );
-        return output;
-      };
+      const call = (role: "author" | "review", suffix = "") =>
+        this.callProvider(state, station, role, runDir, options, suffix);
       try {
         let output = validateAuthorOutput(await call("author"));
         if (output.questions.length) {
@@ -487,7 +517,7 @@ export class Kitchen {
             await this.renderReport(state),
           );
         }
-        if (station !== "intent") {
+        if (config.stations[station]?.reviewEnabled) {
           const review = validateReviewOutput(await call("review"));
           record.summary += "\nIndependent review: " + review.summary;
           record.findings.push(...review.findings);
@@ -820,7 +850,7 @@ export class Kitchen {
       const fingerprint = await this.fingerprint(state, station);
       if (record.reviewFingerprint !== fingerprint)
         throw new Error(
-          "Artifact or inputs changed since review. Rerun the station before approval.",
+          "Artifact or inputs changed since validation. Rerun the station before approval.",
         );
       const resolutions = options.resolutions ?? {};
       for (const id of Object.keys(resolutions))
@@ -862,7 +892,7 @@ export class Kitchen {
             ...(!state.testsFirstCommit ? contract.scaffoldFiles : []),
           ],
           state.testsFirstCommit
-            ? `test(${feature}): independently reviewed requirement-based test revision`
+            ? `test(${feature}): approved requirement-based test revision`
             : `test(${feature}): approved unit tests before feature implementation`,
         );
         if (state.testsFirstCommit)
@@ -940,7 +970,7 @@ export class Kitchen {
       "",
       "## Limitations",
       "",
-      "LLM judgments are independent reviews, not executable proof. Optional/unverified checks and missing manual observations remain visible. Local raw transcripts and evidence are retained under .kitchen; they are not included in this commit.",
+      "Author judgments and any opted-in independent reviews are not executable proof. Optional/unverified checks and missing manual observations remain visible. Local raw transcripts and evidence are retained under .kitchen; they are not included in this commit.",
       "",
     );
     return lines.join("\n");
@@ -1086,7 +1116,10 @@ export class Kitchen {
   }
   async publish(
     feature: string,
-    options: { preview?: boolean } = {},
+    options: { preview?: boolean } & Pick<
+      RunOptions,
+      "signal" | "onProgress"
+    > = {},
   ): Promise<{
     title: string;
     body: string;
@@ -1106,12 +1139,12 @@ export class Kitchen {
       writeFileSync(bodyFile, preview.body);
       if (options.preview) {
         const record = this.record();
-        record.status = "awaiting-approval";
         record.summary = "Exact PR preview prepared; no remote writes.";
         record.artifactFiles = [...docs, "verification"].map((s) =>
           this.document(state, s),
         );
         state.stations.publish = record;
+        this.storage.save(state);
         const diff = await git(state.worktree, "diff", state.baseCommit);
         const newFiles = (
           await git(
@@ -1135,9 +1168,34 @@ export class Kitchen {
           previewFile,
           `# ${preview.title}\n\n${preview.body}\n\n## Exact candidate changes\n\n${diff}\n${untrackedDiff}\n`,
         );
-        record.reviewFingerprint = await this.fingerprint(state, "publish");
-        this.storage.save(state);
-        return { ...preview, diff: diff + "\n" + untrackedDiff, previewFile };
+        try {
+          const config = loadConfig(this.root);
+          if (config.stations.publish?.reviewEnabled) {
+            const review = validateReviewOutput(
+              await this.callProvider(
+                state,
+                "publish",
+                "review",
+                path.join(dir, "runs", record.runId),
+                {
+                  ...options,
+                  feedback: `Exact publication preview:\n${readFileSync(previewFile, "utf8")}`,
+                },
+              ),
+            );
+            record.summary += "\nIndependent review: " + review.summary;
+            record.findings.push(...review.findings);
+          }
+          record.status = "awaiting-approval";
+          record.reviewFingerprint = await this.fingerprint(state, "publish");
+          this.storage.save(state);
+          return { ...preview, diff: diff + "\n" + untrackedDiff, previewFile };
+        } catch (error) {
+          record.status = "failed";
+          record.error = error instanceof Error ? error.message : String(error);
+          this.storage.save(state);
+          throw error;
+        }
       }
       if (state.stations.publish?.status !== "approved")
         throw new Error("Preview and approve publish before pushing.");

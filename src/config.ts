@@ -77,6 +77,11 @@ export function loadConfig(root: string): Config {
   for (const [station, pair] of Object.entries(config.stations)) {
     if (!stationOrder.includes(station as (typeof stationOrder)[number]))
       throw new Error(`Unknown station ${station}`);
+    if (
+      pair?.reviewEnabled !== undefined &&
+      typeof pair.reviewEnabled !== "boolean"
+    )
+      throw new Error(`Station ${station} reviewEnabled must be a boolean.`);
     if (pair?.author) role(pair.author);
     if (pair?.review) role(pair.review);
   }

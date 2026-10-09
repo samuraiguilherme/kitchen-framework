@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { loadConfig } from "../src/config.ts";
+import { stationOrder } from "../src/domain.ts";
 
 function fixture(shared: unknown, local?: unknown) {
   const root = mkdtempSync(path.join(tmpdir(), "kitchen-local-config-"));
@@ -16,6 +17,51 @@ function fixture(shared: unknown, local?: unknown) {
 }
 
 describe("machine-local Kitchen configuration", () => {
+  it("requires an explicit review opt-in even when a reviewer is configured", () => {
+    const config = loadConfig(
+      fixture({ stations: { spec: { review: { provider: "claude" } } } }),
+    );
+    for (const station of stationOrder)
+      expect(config.stations[station]?.reviewEnabled ?? false).toBe(false);
+  });
+  it.each(stationOrder)(
+    "merges the %s review opt-in with local settings",
+    (station) => {
+      const root = fixture(
+        {
+          stations: {
+            [station]: {
+              reviewEnabled: true,
+              review: { provider: "claude", model: "review-model" },
+            },
+          },
+        },
+        { stations: { [station]: { reviewEnabled: false } } },
+      );
+      expect(loadConfig(root).stations[station]).toEqual({
+        reviewEnabled: false,
+        review: { provider: "claude", model: "review-model" },
+      });
+      writeFileSync(
+        path.join(root, "kitchen.config.local.json"),
+        JSON.stringify({
+          stations: { [station]: { review: { model: "local-model" } } },
+        }),
+      );
+      expect(loadConfig(root).stations[station]).toEqual({
+        reviewEnabled: true,
+        review: { provider: "claude", model: "local-model" },
+      });
+    },
+  );
+  it.each(["true", 1, null, {}])(
+    "rejects non-boolean review opt-ins: %j",
+    (reviewEnabled) => {
+      expect(() =>
+        loadConfig(fixture({ stations: { spec: { reviewEnabled } } })),
+      ).toThrow(/reviewEnabled must be a boolean/);
+    },
+  );
   it("merges a local Windows sandbox selection with the shared Codex settings", () => {
     const root = fixture(
       { providers: { author: { provider: "codex", model: "shared-model" } } },

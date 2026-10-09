@@ -7,6 +7,7 @@ import { loadConfig } from "../src/config.ts";
 import { hostedProvider } from "../src/providers.ts";
 import { runProcess } from "../src/process.ts";
 import type { ProcessOptions, ProcessResult } from "../src/process.ts";
+import { stationOrder } from "../src/domain.ts";
 
 vi.mock("../src/process.ts", () => ({ runProcess: vi.fn() }));
 const run = vi.mocked(runProcess);
@@ -71,6 +72,62 @@ beforeEach(() => {
 afterEach(() => vi.resetAllMocks());
 
 describe("live model readiness diagnostics", () => {
+  it("ignores disabled reviewers and the unused publish author", async () => {
+    config({
+      providers: {
+        review: { provider: "claude", executable: "unused-reviewer" },
+      },
+      stations: {
+        spec: {
+          review: { provider: "claude", executable: "unused-spec-reviewer" },
+        },
+        plan: {
+          reviewEnabled: false,
+          review: { provider: "claude", executable: "unused-plan-reviewer" },
+        },
+        publish: {
+          author: { provider: "claude", executable: "unused-publish-author" },
+        },
+      },
+    });
+    const results = await doctor(root);
+    expect(probes()).toHaveLength(1);
+    expect(
+      run.mock.calls.every(
+        ([request]) => !request.command.startsWith("unused-"),
+      ),
+    ).toBe(true);
+    expect(results.some((result) => result.id.startsWith("claude-"))).toBe(
+      false,
+    );
+  });
+  it.each(stationOrder)(
+    "probes an opted-in %s reviewer without requiring the unused default",
+    async (station) => {
+      config({
+        providers: {
+          review: { provider: "claude", executable: "unused-reviewer" },
+        },
+        stations: {
+          [station]: {
+            reviewEnabled: true,
+            review: { provider: "claude", model: "station-review" },
+          },
+        },
+      });
+      const results = await doctor(root);
+      expect(probes()).toHaveLength(2);
+      expect(probes()[1]?.args).toContain("station-review");
+      expect(
+        results.find((result) => result.id === "claude-model-2")?.reason,
+      ).toContain(`stations.${station}.review`);
+      expect(
+        run.mock.calls.some(
+          ([request]) => request.command === "unused-reviewer",
+        ),
+      ).toBe(false);
+    },
+  );
   it("probes and identifies distinct Windows sandbox selections", async () => {
     config({
       providers: {
@@ -85,6 +142,7 @@ describe("live model readiness diagnostics", () => {
           windowsSandbox: "elevated",
         },
       },
+      stations: { spec: { reviewEnabled: true } },
     });
     const results = await doctor(root);
     expect(probes()).toHaveLength(2);
@@ -106,13 +164,17 @@ describe("live model readiness diagnostics", () => {
       },
       stations: {
         spec: {
+          reviewEnabled: true,
           author: {
             provider: "codex",
             model: "author-model",
             executable: "C:/CLIs with spaces/codex.cmd",
           },
         },
-        plan: { review: { provider: "claude", model: "station-model" } },
+        plan: {
+          reviewEnabled: true,
+          review: { provider: "claude", model: "station-model" },
+        },
       },
     });
     const results = await doctor(root);
@@ -139,7 +201,7 @@ describe("live model readiness diagnostics", () => {
 
   it("probes inherited CLI defaults without inventing a model override", async () => {
     const results = await doctor(root);
-    expect(probes()).toHaveLength(2);
+    expect(probes()).toHaveLength(1);
     expect(probes().every((p) => !p.args.includes("--model"))).toBe(true);
     expect(
       results
@@ -158,7 +220,7 @@ describe("live model readiness diagnostics", () => {
       },
     });
     const results = await doctor(root);
-    expect(probes()).toHaveLength(3);
+    expect(probes()).toHaveLength(2);
     expect(probes().some((probe) => probe.args.includes("intent-author"))).toBe(
       true,
     );
@@ -178,6 +240,7 @@ describe("live model readiness diagnostics", () => {
   });
 
   it("isolates probes from repository instructions and retains local evidence", async () => {
+    config({ stations: { spec: { reviewEnabled: true } } });
     const results = await doctor(root);
     expect(probes()).toHaveLength(2);
     for (const p of probes()) {
@@ -245,6 +308,7 @@ describe("live model readiness diagnostics", () => {
   it.each(["invalid JSON", "wrong response", "provider error"])(
     "rejects %s despite exit code zero",
     async (failure) => {
+      config({ stations: { spec: { reviewEnabled: true } } });
       run.mockImplementation(async (p) => {
         if (!isProbe(p)) return fakeProcess(p);
         const index = p.args.indexOf("--output-last-message");
@@ -289,7 +353,7 @@ describe("live model readiness diagnostics", () => {
         : fakeProcess(p),
     );
     const results = await doctor(root);
-    expect(probes()).toHaveLength(1);
+    expect(probes()).toHaveLength(0);
     expect(results.find((r) => r.id === "codex-model-1")).toMatchObject({
       required: true,
       status: "unverified",

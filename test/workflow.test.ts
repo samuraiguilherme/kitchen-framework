@@ -10,6 +10,8 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Kitchen } from "../src/kitchen.ts";
+import { stationOrder } from "../src/domain.ts";
+import type { Config } from "../src/types.ts";
 
 const documents: Record<string, string> = {
   intent:
@@ -38,7 +40,7 @@ function git(root: string, ...args: string[]) {
   }).trim();
 }
 
-function fixture(baselineAnswer = 0) {
+function fixture(baselineAnswer = 0, stations: Config["stations"] = {}) {
   const root = mkdtempSync(path.join(tmpdir(), "kitchen-workflow-"));
   mkdirSync(path.join(root, "src"));
   writeFileSync(path.join(root, ".gitignore"), ".kitchen/\nnode_modules/\n");
@@ -57,6 +59,7 @@ process.exitCode=passed?0:1;`,
     path.join(root, "kitchen.config.json"),
     JSON.stringify({
       github: { repository: "HireBus/hirebus-v3", account: "chef" },
+      stations,
       profiles: {
         unit: {
           cwd: ".",
@@ -206,7 +209,7 @@ describe("station workflow", () => {
         calls
           .filter((call) => call.station === station)
           .map((call) => call.role),
-      ).toEqual(station === "intent" ? ["author"] : ["author", "review"]);
+      ).toEqual(["author"]);
       if (station === "intent") {
         expect(draft.stations.intent?.summary).toBe("Prepared");
         await expect(kitchen.run("answer", "spec")).rejects.toThrow(/intent/i);
@@ -273,7 +276,7 @@ describe("station workflow", () => {
     await expect(kitchen.run("answer", "spec")).rejects.toThrow(/intent/i);
   });
   it("pauses for questions without applying a bundled draft or file proposals", async () => {
-    const setup = fixture();
+    const setup = fixture(0, { intent: { reviewEnabled: true } });
     let questioned = false;
     const provider = async (request: {
       station: string;
@@ -340,7 +343,78 @@ describe("station workflow", () => {
     expect(setup.calls[1]?.prompt).toContain(
       "Human revision request:\nCompany owners",
     );
-    expect(setup.calls.map((call) => call.role)).toEqual(["author", "author"]);
+    expect(setup.calls.map((call) => call.role)).toEqual([
+      "author",
+      "author",
+      "review",
+    ]);
+  });
+  it("requires a new run when review is enabled before or after approval", async () => {
+    const setup = fixture(0, { intent: { reviewEnabled: false } });
+    await setup.kitchen.start("answer", { request: "Return 42." });
+    await setup.kitchen.run("answer", "intent");
+    const file = path.join(setup.root, "kitchen.config.json");
+    const config = JSON.parse(readFileSync(file, "utf8"));
+    config.stations.intent.reviewEnabled = true;
+    writeFileSync(file, JSON.stringify(config));
+    await expect(
+      setup.kitchen.approve("answer", "intent", { actor: "chef" }),
+    ).rejects.toThrow(/changed since validation/);
+    await setup.kitchen.run("answer", "intent");
+    expect(setup.calls.map((call) => call.role)).toEqual([
+      "author",
+      "author",
+      "review",
+    ]);
+    await setup.kitchen.approve("answer", "intent", { actor: "chef" });
+    await setup.kitchen.run("answer", "spec");
+    await setup.kitchen.approve("answer", "spec", { actor: "chef" });
+    config.stations.spec = { reviewEnabled: true };
+    writeFileSync(file, JSON.stringify(config));
+    const state = await setup.kitchen.status("answer");
+    expect(state.stations.intent?.status).toBe("approved");
+    expect(state.stations.spec?.status).toBe("stale");
+  });
+  it("binds inherited provider settings even when only a review flag is configured", async () => {
+    const setup = fixture(0, { intent: { reviewEnabled: false } });
+    await setup.kitchen.start("answer", { request: "Return 42." });
+    await setup.kitchen.run("answer", "intent");
+    await setup.kitchen.approve("answer", "intent", { actor: "chef" });
+    const file = path.join(setup.root, "kitchen.config.json");
+    const config = JSON.parse(readFileSync(file, "utf8"));
+    config.providers = { author: { provider: "codex", model: "new-model" } };
+    writeFileSync(file, JSON.stringify(config));
+    expect((await setup.kitchen.status("answer")).stations.intent?.status).toBe(
+      "stale",
+    );
+  });
+  it("blocks approval on opted-in intent review findings", async () => {
+    const setup = fixture(0, { intent: { reviewEnabled: true } });
+    const kitchen = new Kitchen({
+      root: setup.root,
+      github: setup.gateway,
+      provider: async (request) =>
+        request.role === "review"
+          ? {
+              summary: "Outcome needs clarification",
+              findings: [
+                {
+                  id: "intent-outcome",
+                  rule: "outcome",
+                  blocking: true,
+                  evidence: "Intent does not define who receives the answer",
+                  consequence: "The recipient is ambiguous",
+                  resolution: "Name the recipient",
+                },
+              ],
+            }
+          : setup.provider(request),
+    });
+    await kitchen.start("answer", { request: "Return 42." });
+    await kitchen.run("answer", "intent");
+    await expect(
+      kitchen.approve("answer", "intent", { actor: "chef" }),
+    ).rejects.toThrow(/blocking findings/);
   });
   it.each([null, "Unresolved draft; not ready for review."])(
     "persists human answers separately and asks before authoring (draft: %s)",
@@ -650,27 +724,114 @@ describe("station workflow", () => {
       "awaiting-approval",
     );
   });
-  it("requires GREEN and produces a reproducible report before PR publication", async () => {
-    const setup = fixture();
+  it.each([undefined, false, true])(
+    "requires GREEN and human approval with reviewEnabled=%s at every station",
+    async (reviewEnabled) => {
+      const setup = fixture(
+        0,
+        Object.fromEntries(
+          stationOrder.map((station) => [
+            station,
+            {
+              reviewEnabled,
+              review: { provider: "claude", model: "station-review" },
+            },
+          ]),
+        ),
+      );
+      await acceptDocs(setup.kitchen);
+      for (const station of [
+        "unit-tests",
+        "implementation",
+        "verify",
+      ] as const) {
+        await setup.kitchen.run("answer", station);
+        await setup.kitchen.approve("answer", station, { actor: "chef" });
+      }
+      const report = await setup.kitchen.report("answer");
+      expect(report).toContain("AC-1");
+      expect(report).toContain("expected-red");
+      expect(report).toContain("passed");
+      const preview = await setup.kitchen.publish("answer", { preview: true });
+      expect(setup.counts()).toEqual({ created: 0, pushed: 0 });
+      expect(preview.body).toContain("test-plan.md");
+      for (const station of stationOrder) {
+        const calls = setup.calls.filter((call) => call.station === station);
+        expect(calls.map((call) => call.role)).toEqual([
+          ...(station === "publish" ? [] : ["author"]),
+          ...(reviewEnabled ? ["review"] : []),
+        ]);
+        if (station !== "publish")
+          expect(calls[0]?.prompt).toContain(
+            reviewEnabled
+              ? "followed by independent review and human approval"
+              : "followed by human approval",
+          );
+      }
+      if (reviewEnabled)
+        expect(setup.calls.at(-1)?.prompt).toContain(
+          "Exact publication preview:",
+        );
+      await expect(setup.kitchen.publish("answer")).rejects.toThrow(
+        /approve publish/,
+      );
+      await setup.kitchen.approve("answer", "publish", { actor: "chef" });
+      const published = await setup.kitchen.publish("answer");
+      expect(published.url).toBe(
+        "https://github.com/HireBus/hirebus-v3/pull/123",
+      );
+      await setup.kitchen.publish("answer");
+      expect(setup.counts().created).toBe(1);
+    },
+  );
+  it("recovers failed publish reviews and preserves blocking findings without remote writes", async () => {
+    const setup = fixture(0, { publish: { reviewEnabled: true } });
     await acceptDocs(setup.kitchen);
     for (const station of ["unit-tests", "implementation", "verify"] as const) {
       await setup.kitchen.run("answer", station);
       await setup.kitchen.approve("answer", station, { actor: "chef" });
     }
-    const report = await setup.kitchen.report("answer");
-    expect(report).toContain("AC-1");
-    expect(report).toContain("expected-red");
-    expect(report).toContain("passed");
-    const preview = await setup.kitchen.publish("answer", { preview: true });
-    expect(setup.counts()).toEqual({ created: 0, pushed: 0 });
-    expect(preview.body).toContain("test-plan.md");
-    await setup.kitchen.approve("answer", "publish", { actor: "chef" });
-    const published = await setup.kitchen.publish("answer");
-    expect(published.url).toBe(
-      "https://github.com/HireBus/hirebus-v3/pull/123",
+    let fail = true;
+    const kitchen = new Kitchen({
+      root: setup.root,
+      github: setup.gateway,
+      provider: async (request) => {
+        expect(request.station).toBe("publish");
+        expect(request.role).toBe("review");
+        if (fail) throw new Error("review unavailable");
+        return {
+          summary: "Describe the behavior in the PR title",
+          findings: [
+            {
+              id: "publish-title",
+              rule: "title",
+              blocking: true,
+              evidence: "Title is feat: answer",
+              consequence: "Behavior change is unclear",
+              resolution: "Describe the answer change",
+            },
+          ],
+        };
+      },
+    });
+    await expect(kitchen.publish("answer", { preview: true })).rejects.toThrow(
+      /review unavailable/,
     );
-    await setup.kitchen.publish("answer");
-    expect(setup.counts().created).toBe(1);
+    expect((await kitchen.status("answer")).stations.publish?.status).toBe(
+      "failed",
+    );
+    await expect(
+      kitchen.approve("answer", "publish", { actor: "chef" }),
+    ).rejects.toThrow(/failed/);
+    fail = false;
+    await kitchen.publish("answer", { preview: true });
+    expect((await kitchen.status("answer")).stations.publish?.status).toBe(
+      "awaiting-approval",
+    );
+    await expect(
+      kitchen.approve("answer", "publish", { actor: "chef" }),
+    ).rejects.toThrow(/blocking findings/);
+    expect(setup.counts()).toEqual({ created: 0, pushed: 0 });
   });
   it("requires explicit identity and detects changed base/source before publication", async () => {
     const setup = fixture();

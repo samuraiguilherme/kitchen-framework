@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { loadConfig } from "./config.ts";
+import { stationOrder } from "./domain.ts";
 import { runProcess } from "./process.ts";
 import { probeProvider } from "./providers.ts";
 import type { CheckResult, RoleConfig } from "./types.ts";
@@ -34,15 +35,22 @@ export async function doctor(
         pair.config.executable === role.executable &&
         pair.config.windowsSandbox === role.windowsSandbox,
     );
-    if (existing) existing.roles.push(label);
-    else pairs.push({ config: role, roles: [label], prerequisites: [] });
+    if (existing) {
+      if (!existing.roles.includes(label)) existing.roles.push(label);
+    } else pairs.push({ config: role, roles: [label], prerequisites: [] });
   };
-  addPair(config.providers.author, "providers.author");
-  addPair(config.providers.review, "providers.review");
-  for (const [station, roles] of Object.entries(config.stations)) {
-    if (roles.author) addPair(roles.author, `stations.${station}.author`);
-    if (station !== "intent" && roles.review)
-      addPair(roles.review, `stations.${station}.review`);
+  for (const station of stationOrder) {
+    const roles = config.stations[station];
+    if (station !== "publish")
+      addPair(
+        roles?.author ?? config.providers.author,
+        roles?.author ? `stations.${station}.author` : "providers.author",
+      );
+    if (roles?.reviewEnabled)
+      addPair(
+        roles.review ?? config.providers.review,
+        roles.review ? `stations.${station}.review` : "providers.review",
+      );
   }
   const packageFile = path.join(root, "package.json");
   const pinned = existsSync(packageFile)
