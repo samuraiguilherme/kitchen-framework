@@ -37,7 +37,11 @@ export const findingSchema = object({
   resolution: str,
 });
 export const checkSchema = object({
-  id: str,
+  id: {
+    type: "string",
+    description:
+      "Unique lowercase kebab-case check ID, e.g. backend-purchases or manual-browser. Use the same ID in document references.",
+  },
   profile: str,
   files: strings,
   acIds: strings,

@@ -38,6 +38,7 @@ import {
 } from "./providers.ts";
 import { instructions, rubric, stationPrompt } from "./prompts.ts";
 import { Storage } from "./storage.ts";
+import { normalizeTestPlan } from "./test-plan.ts";
 import { execute } from "./process.ts";
 import type {
   AuthorOutput,
@@ -483,6 +484,7 @@ export class Kitchen {
             return state;
           }
         }
+        if (station === "test-plan") output = normalizeTestPlan(output);
         record.output = output;
         record.summary = output.summary;
         await this.applyOutput(state, station, output, record);

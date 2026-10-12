@@ -170,7 +170,7 @@ export function validateCheckPlan(
           "Select an explicit configured check profile.",
         ),
       );
-    if (!/^[a-z0-9-]+$/.test(check.id))
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(check.id))
       findings.push(
         finding("invalid-check-id", check.id, "Use kebab-case IDs."),
       );

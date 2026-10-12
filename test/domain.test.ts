@@ -90,6 +90,35 @@ describe("station contracts", () => {
       lintDocument("intent", "# <Title>\n## Who is affected\nEveryone").length,
     ).toBeGreaterThan(0);
   });
+  it.each(["Regression", "Required evidence"])(
+    "requires an exact, nonempty %s test-plan section",
+    (heading) => {
+      const document =
+        "# Test plan\n## Acceptance coverage\nAC-1: unit.\n" +
+        "## Unit tests\nsrc/answer.test.ts\n## Regression\nExisting suite GREEN.\n" +
+        "## Required evidence\nBehavioral RED and final GREEN reports.\n";
+      expect(lintDocument("test-plan", document)).toEqual([]);
+      expect(
+        lintDocument(
+          "test-plan",
+          document.replace(`## ${heading}\n`, `## ${heading} and blockers\n`),
+        ),
+      ).toContainEqual(
+        expect.objectContaining({ rule: "missing-section", evidence: heading }),
+      );
+      expect(
+        lintDocument(
+          "test-plan",
+          document.replace(
+            new RegExp(`(## ${heading}\\n)[^]*?(?=\\n## |$)`),
+            "$1<!-- fill this section -->\n",
+          ),
+        ),
+      ).toContainEqual(
+        expect.objectContaining({ rule: "empty-section", evidence: heading }),
+      );
+    },
+  );
   it("flags a specification without observable acceptance criteria", () => {
     expect(
       lintDocument(

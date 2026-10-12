@@ -63,6 +63,8 @@ Edit documents in the feature worktree. Frontmatter status is descriptive; it ne
 
 The plan and test plan contain a visible JSON execution manifest appended by the runner. It records exact file scope, check profiles, test files, scaffold files and RED/GREEN expectations. Review it with the prose. Wildcards are not accepted as write scope. The author reads the existing intent/spec/plan templates and relevant repository instructions.
 
+Generated test-plan check IDs are normalized to lowercase kebab-case before validation, writing the manifest and review; matching document references use those same IDs. Duplicate IDs after normalization remain blockers. Test plans require the exact nonempty headings `## Acceptance coverage`, `## Unit tests`, `## Regression` and `## Required evidence`, including when a feature worktree has an older template.
+
 ## Approvals and disputed findings
 
 The local approval record binds the validated artifact, upstream approvals, policy/rubric contents, effective provider and review settings, check profiles, raw execution evidence and relevant source fingerprint. Edits after validation or changes to `reviewEnabled` require a new run (or a new publish preview). A required failed/unverified check cannot be accepted through a reviewer-resolution file.

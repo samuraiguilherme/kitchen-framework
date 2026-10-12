@@ -175,6 +175,59 @@ async function acceptDocs(kitchen: Kitchen) {
 }
 
 describe("station workflow", () => {
+  it("normalizes generated check IDs in the document, manifest, review and execution", async () => {
+    const setup = fixture(0, { "test-plan": { reviewEnabled: true } });
+    const kitchen = new Kitchen({
+      root: setup.root,
+      github: setup.gateway,
+      provider: async (request) => {
+        const output = await setup.provider(request);
+        if (
+          request.role === "author" &&
+          request.station === "test-plan" &&
+          "checks" in output
+        ) {
+          output.checks = checks.map((check) => ({
+            ...check,
+            id: "K-answer-unit",
+          }));
+          output.document = output.document!.replace(
+            "AC-1: unit assertion.",
+            "AC-1: `K-answer-unit` unit assertion.",
+          );
+        }
+        return output;
+      },
+    });
+
+    await acceptDocs(kitchen);
+    const state = await kitchen.status("answer");
+    const record = state.stations["test-plan"]!;
+    expect(record.findings).toEqual([]);
+    expect(record.output?.checks[0]?.id).toBe("k-answer-unit");
+    expect(record.output?.document).toContain("`k-answer-unit`");
+    const document = readFileSync(
+      path.join(state.worktree, "docs/features/answer/test-plan.md"),
+      "utf8",
+    );
+    expect(document).toContain('"id": "k-answer-unit"');
+    expect(document).not.toContain("K-answer-unit");
+    const authorPrompt = setup.calls.find(
+      (call) => call.station === "test-plan" && call.role === "author",
+    )!.prompt;
+    expect(authorPrompt).toContain("## Regression");
+    expect(authorPrompt).toContain("## Required evidence");
+    const reviewPrompt = setup.calls.find(
+      (call) => call.station === "test-plan" && call.role === "review",
+    )!.prompt;
+    expect(reviewPrompt).toContain('"id": "k-answer-unit"');
+
+    const tested = await kitchen.run("answer", "unit-tests");
+    expect(tested.stations["unit-tests"]?.checks[0]).toMatchObject({
+      id: "k-answer-unit",
+      status: "expected-red",
+    });
+  });
   it("creates an isolated worktree anchored to the remote development commit", async () => {
     const { kitchen, root, base } = fixture();
     const state = await kitchen.start("answer", { request: "Return 42." });
