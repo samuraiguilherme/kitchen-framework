@@ -102,7 +102,8 @@ export async function baselineWorktree(
   scaffoldContents: Record<string, string> = {},
 ): Promise<string> {
   await git(root, "worktree", "add", "--detach", target, base);
-  // Only accepted tests and interface scaffolds enter the pre-implementation baseline.
+  // Only accepted tests, minimal interfaces and verified operator runtime snapshots
+  // enter the pre-implementation baseline. Feature implementations stay pinned.
   for (const file of files) {
     const source = safePath(candidate, file);
     const destination = safePath(target, file);

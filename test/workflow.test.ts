@@ -174,6 +174,238 @@ async function acceptDocs(kitchen: Kitchen) {
   }
 }
 
+async function preparedFixture(setupCode = 0) {
+  const setup = fixture();
+  const configFile = path.join(setup.root, "kitchen.config.json");
+  const config = JSON.parse(readFileSync(configFile, "utf8"));
+  config.profiles.unit.setup = {
+    command: "pnpm",
+    args: ["install", "--offline", "--frozen-lockfile", "--ignore-scripts"],
+    timeoutMs: 10000,
+  };
+  config.profiles.architecture = {
+    command: process.execPath,
+    args: ["packages/example/scripts/check-architecture.mjs"],
+    kind: "command",
+    parser: "exit-code",
+    timeoutMs: 10000,
+  };
+  writeFileSync(configFile, JSON.stringify(config));
+  const files = [
+    "package.json",
+    "pnpm-lock.yaml",
+    "packages/example/package.json",
+    "packages/example/scripts/check-architecture.mjs",
+  ];
+  const kitchen = new Kitchen({
+    root: setup.root,
+    github: setup.gateway,
+    provider: async (request) => {
+      const output = await setup.provider(request);
+      if (request.role === "author" && "files" in output) {
+        if (request.station === "plan") output.allowedPaths.push(...files);
+        if (request.station === "test-plan") {
+          // Old accepted manifests used scaffoldFiles for runtime support.
+          output.scaffoldFiles = files;
+          output.checks = [
+            ...checks,
+            {
+              id: "k-architecture",
+              profile: "architecture",
+              files: [],
+              acIds: ["AC-1"],
+              required: true,
+              expectation: "green",
+            },
+          ];
+        }
+        if (
+          request.station === "unit-tests" &&
+          !request.prompt.includes('"status":"passed"')
+        )
+          return {
+            ...output,
+            files: [],
+            questions: [
+              {
+                id: "preparation",
+                text: "Which runner preparation artifact supplies the runtime fix?",
+              },
+            ],
+          };
+      }
+      return output;
+    },
+  });
+  await acceptDocs(kitchen);
+  const state = await kitchen.status("answer");
+  writeFileSync(
+    path.join(state.worktree, "package.json"),
+    JSON.stringify({
+      name: "kitchen-offline-fixture",
+      private: true,
+      packageManager: "pnpm@9.15.9",
+      ...(setupCode
+        ? { dependencies: { "missing-offline-fixture": "0.0.0" } }
+        : {}),
+    }),
+  );
+  writeFileSync(
+    path.join(state.worktree, "pnpm-lock.yaml"),
+    "lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\n\nimporters:\n\n  .: {}\n",
+  );
+  mkdirSync(path.join(state.worktree, "packages/example/scripts"), {
+    recursive: true,
+  });
+  writeFileSync(
+    path.join(state.worktree, "packages/example/package.json"),
+    '{"name":"example","version":"1.0.0"}\n',
+  );
+  writeFileSync(
+    path.join(
+      state.worktree,
+      "packages/example/scripts/check-architecture.mjs",
+    ),
+    "import {readFileSync} from 'node:fs'; JSON.parse(readFileSync('packages/example/package.json')); console.log('architecture GREEN');\n",
+  );
+  const request = {
+    reason: "Previously approved runtime fix",
+    files,
+    setupProfiles: ["unit"],
+    checks: ["k-architecture"],
+  };
+  return { ...setup, kitchen, files, request, state };
+}
+
+describe("operator runner preparation", () => {
+  it("resumes the handoff with raw evidence and runtime snapshots while feature code stays pinned", async () => {
+    const setup = await preparedFixture();
+    const pending = await setup.kitchen.run("answer", "unit-tests");
+    expect(pending.stations["unit-tests"]?.status).toBe("awaiting-input");
+    const prepared = await setup.kitchen.prepare("answer", setup.request);
+    expect(
+      prepared.preparation?.status,
+      readFileSync(prepared.preparation!.artifact, "utf8"),
+    ).toBe("passed");
+    expect(prepared.stations["unit-tests"]?.status).toBe("stale");
+    const artifact = JSON.parse(
+      readFileSync(prepared.preparation!.artifact, "utf8"),
+    );
+    expect(artifact.documents.plan.commit).toBe(prepared.stations.plan?.commit);
+    expect(artifact.environment).toMatchObject({
+      platform: process.platform,
+      node: process.version,
+    });
+    expect(artifact.filesAfter).toEqual(artifact.files);
+    const directory = path.dirname(prepared.preparation!.artifact);
+    const execution = JSON.parse(
+      readFileSync(path.join(directory, "raw-k-architecture.json"), "utf8"),
+    );
+    expect(execution).toMatchObject({
+      code: 0,
+      stdout: "architecture GREEN\n",
+      stderr: "",
+      profile: "architecture",
+      cwd: prepared.worktree,
+    });
+    expect(execution.startedAt).toBeTruthy();
+    expect(execution.finishedAt).toBeTruthy();
+    expect(
+      JSON.parse(readFileSync(path.join(directory, "setup-unit.json"), "utf8")),
+    ).toMatchObject({ code: 0, profile: "unit", files: artifact.files });
+    // Candidate production changes must not leak into the RED baseline.
+    writeFileSync(
+      path.join(prepared.worktree, "src/answer.ts"),
+      "export const answer = 42;\n",
+    );
+    const resumed = await setup.kitchen.run("answer", "unit-tests");
+    expect(resumed.stations["unit-tests"]?.status).toBe("awaiting-approval");
+    expect(resumed.stations["unit-tests"]?.checks[0]?.status).toBe(
+      "expected-red",
+    );
+    const prompt = setup.calls.at(-1)!.prompt;
+    expect(prompt).toContain(prepared.preparation!.artifact);
+    expect(prompt).toContain(prepared.preparation!.runId);
+    const baseline = JSON.parse(
+      readFileSync(
+        path.join(
+          setup.root,
+          ".kitchen/features/answer/runs",
+          resumed.stations["unit-tests"]!.runId,
+          "baseline.json",
+        ),
+        "utf8",
+      ),
+    );
+    expect(
+      readFileSync(path.join(baseline.path, "src/answer.ts"), "utf8"),
+    ).toContain("= 0");
+    for (const file of setup.files)
+      expect(readFileSync(path.join(baseline.path, file), "utf8")).toBe(
+        readFileSync(path.join(prepared.worktree, file), "utf8"),
+      );
+  });
+
+  it("retains setup failure evidence and blocks the author before calling it", async () => {
+    const setup = await preparedFixture(1);
+    const prepared = await setup.kitchen.prepare("answer", setup.request);
+    expect(prepared.preparation?.status).toBe("failed");
+    const directory = path.dirname(prepared.preparation!.artifact);
+    expect(
+      JSON.parse(readFileSync(path.join(directory, "setup-unit.json"), "utf8")),
+    ).toMatchObject({ code: 1 });
+    const calls = setup.calls.length;
+    await expect(setup.kitchen.run("answer", "unit-tests")).rejects.toThrow(
+      /Runner preparation failed/,
+    );
+    expect(setup.calls).toHaveLength(calls);
+  });
+
+  it.each(["source", "snapshot", "evidence", "profile"])(
+    "rejects changed preparation %s before authoring",
+    async (kind) => {
+      const setup = await preparedFixture();
+      const prepared = await setup.kitchen.prepare("answer", setup.request);
+      expect(
+        prepared.preparation?.status,
+        readFileSync(prepared.preparation!.artifact, "utf8"),
+      ).toBe("passed");
+      const directory = path.dirname(prepared.preparation!.artifact);
+      if (kind === "source")
+        writeFileSync(path.join(prepared.worktree, setup.files[0]!), "changed");
+      if (kind === "snapshot")
+        writeFileSync(path.join(directory, setup.files[0]!), "changed");
+      if (kind === "evidence")
+        writeFileSync(
+          path.join(directory, "raw-k-architecture.json"),
+          "changed",
+        );
+      if (kind === "profile") {
+        const file = path.join(setup.root, "kitchen.config.json");
+        const config = JSON.parse(readFileSync(file, "utf8"));
+        config.profiles.architecture.args = ["-e", "process.exit(0)"];
+        writeFileSync(file, JSON.stringify(config));
+      }
+      const calls = setup.calls.length;
+      await expect(setup.kitchen.run("answer", "unit-tests")).rejects.toThrow(
+        /changed|stale/i,
+      );
+      expect(setup.calls).toHaveLength(calls);
+    },
+  );
+
+  it("rejects feature implementations as runtime preparation", async () => {
+    const setup = await preparedFixture();
+    await expect(
+      setup.kitchen.prepare("answer", {
+        ...setup.request,
+        files: ["src/answer.ts"],
+      }),
+    ).rejects.toThrow(/not feature code/);
+    expect((await setup.kitchen.status("answer")).preparation).toBeUndefined();
+  });
+});
+
 describe("station workflow", () => {
   it("normalizes generated check IDs in the document, manifest, review and execution", async () => {
     const setup = fixture(0, { "test-plan": { reviewEnabled: true } });

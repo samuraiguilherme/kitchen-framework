@@ -400,6 +400,7 @@ export async function executeCheck(input: {
   let previewLog = "";
   try {
     if (profile.setup) {
+      const startedAt = new Date().toISOString();
       const setup = await runProcess({
         ...profile.setup,
         cwd,
@@ -407,7 +408,15 @@ export async function executeCheck(input: {
       });
       writeFileSync(
         path.join(runDir, `setup-${check.id}.json`),
-        JSON.stringify(setup),
+        JSON.stringify({
+          ...setup,
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          profile: check.profile,
+          cwd,
+          ...profile.setup,
+          fingerprint,
+        }),
       );
       if (setup.code !== 0) {
         result.reason =
@@ -494,6 +503,7 @@ export async function executeCheck(input: {
         return finish();
       }
     }
+    const startedAt = new Date().toISOString();
     const execution = await runProcess({
       command: profile.command!,
       args: expand(profile.args!, testFiles, baseUrl),
@@ -513,6 +523,9 @@ export async function executeCheck(input: {
       JSON.stringify(
         {
           ...execution,
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          profile: check.profile,
           cwd,
           command: profile.command,
           args: expand(profile.args!, testFiles, baseUrl),

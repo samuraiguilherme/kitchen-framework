@@ -81,6 +81,45 @@ A new-behavior check needs assertion failures for every mapped AC-n. Syntax/impo
 
 Minimal scaffolds are limited to new interfaces: types/signatures with throw-only bodies or `return undefined`. They cannot replace baseline production modules. The coding station can implement those bodies. The runner hashes approved unit tests and preserves a tests-first commit before implementation.
 
+### Runner preparation
+
+Runtime fixes and offline dependency provisioning belong to the operator, before
+unit-test authoring. After accepting plan/test-plan, apply only their approved
+runtime changes in the feature worktree and run:
+
+```powershell
+pnpm kitchen prepare plans-section --preparation C:/work/preparation.json
+pnpm kitchen run plans-section unit-tests
+```
+
+The operator-owned JSON names exact accepted runtime paths and existing configured
+profiles/check IDs, with the reason for the already-authorized preparation:
+
+```json
+{
+  "reason": "Previously approved Windows architecture path and offline test dependencies",
+  "files": ["packages/iris-ui/scripts/check-architecture.mjs", "packages/supabase/package.json", "pnpm-lock.yaml"],
+  "setupProfiles": ["supabase-unit"],
+  "checks": ["k-architecture"]
+}
+```
+
+`prepare` snapshots those files and executes the selected profiles' setup plus
+accepted GREEN command checks. It records raw stdout/stderr, exit codes,
+timestamps, cwd, profiles, Windows/Node/pnpm identities, source hashes and the
+accepted document revisions under `.kitchen/features/<feature>/preparation/<run-id>/`.
+Failures remain recorded and exit nonzero. Successful preparation supplies the
+author's context, supersedes the old awaiting-input handoff and copies the exact
+runtime snapshots into detached baselines. It does not count as behavioral RED,
+final verification or a tests-first checkpoint. Checks still run normally.
+
+Runtime support is separate from throw-only scaffolds. For older manifests that
+list it in `scaffoldFiles`, only files in the verified operator preparation are
+removed from that minimal-interface role. Feature implementations and test files
+cannot enter preparation. Source, snapshot, profile, evidence or document changes
+invalidate the record; rerun preparation after correcting them. Editing a document
+station clears the current preparation registration while retaining its artifacts.
+
 Implementation proposals that rewrite approved unit tests are rejected before any proposed file is written. To revise accepted tests, return to `unit-tests` with `--feedback "AC-2: <requirement-based reason>"`, run any enabled independent review and accept again. Revised tests run at the original base; the original checkpoint stays recorded and revision commits are listed separately. Implementation and verification must run again.
 
 ## Configure providers and package checks

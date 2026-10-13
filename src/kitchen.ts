@@ -39,6 +39,12 @@ import {
 import { instructions, rubric, stationPrompt } from "./prompts.ts";
 import { Storage } from "./storage.ts";
 import { normalizeTestPlan } from "./test-plan.ts";
+import {
+  prepareRuntime,
+  readPreparation,
+  preparationContents,
+} from "./preparation.ts";
+import type { PreparationInput } from "./preparation.ts";
 import { execute } from "./process.ts";
 import type {
   AuthorOutput,
@@ -118,10 +124,19 @@ export class Kitchen {
   private contracts(state: FeatureState) {
     const plan = this.manifest(state, "plan");
     const testPlan = this.manifest(state, "test-plan");
+    const runtime = preparationContents(
+      this.root,
+      state,
+      loadConfig(this.root),
+    );
     return {
       allowedPaths: plan.allowedPaths,
       unitTestFiles: testPlan.unitTestFiles,
-      scaffoldFiles: testPlan.scaffoldFiles,
+      // Legacy test-plan manifests put runtime support in scaffoldFiles.
+      // Operator-prepared snapshots have a separate, verified baseline role.
+      scaffoldFiles: testPlan.scaffoldFiles.filter(
+        (file) => !Object.hasOwn(runtime, file),
+      ),
       checks: testPlan.checks,
     };
   }
@@ -194,6 +209,14 @@ export class Kitchen {
         versions: [record?.rubricVersion, record?.profileVersions],
         evidence,
         scaffolds: station === "unit-tests" ? state.scaffoldContents : null,
+        preparation: [
+          "unit-tests",
+          "implementation",
+          "verify",
+          "publish",
+        ].includes(station)
+          ? state.preparation
+          : undefined,
         preview: station === "publish" ? this.previewBody(state) : null,
       }),
     );
@@ -292,6 +315,9 @@ export class Kitchen {
       ),
       `CHECK PROFILES (human-controlled):\n${JSON.stringify(config.profiles)}`,
       `LOCAL RUN STATE AND EXECUTABLE EVIDENCE:\n${JSON.stringify(state.stations)}`,
+      `RUNNER PREPARATION (operator-owned runtime support, not minimal scaffolds):\n${JSON.stringify(
+        readPreparation(this.root, state, config) ?? null,
+      )}\nArtifact: ${state.preparation?.artifact ?? "not prepared"}`,
       `BASELINE: ${state.baseCommit}; TESTS-FIRST COMMIT: ${state.testsFirstCommit ?? "not yet recorded"}`,
       `DIFF:\n${await git(state.worktree, "diff", state.baseCommit, "--", ".", ":!.kitchen")}`,
       `UNTRACKED FILES:\n${await git(state.worktree, "ls-files", "--others", "--exclude-standard")}`,
@@ -369,6 +395,41 @@ export class Kitchen {
     for (const next of stationOrder.slice(stationOrder.indexOf(station) + 1))
       if (state.stations[next]) state.stations[next]!.status = "stale";
   }
+  async prepare(
+    feature: string,
+    request: PreparationInput,
+    options: Pick<RunOptions, "signal" | "onProgress"> = {},
+  ): Promise<FeatureState> {
+    return this.storage.lock(feature, async () => {
+      const state = await this.status(feature);
+      this.requirePrevious(state, "unit-tests");
+      if (state.pr)
+        throw new Error("Published features cannot be prepared again.");
+      const plan = this.manifest(state, "plan");
+      const testPlan = this.manifest(state, "test-plan");
+      state.preparation = await prepareRuntime({
+        root: this.root,
+        state,
+        config: loadConfig(this.root),
+        allowedPaths: plan.allowedPaths,
+        unitTestFiles: testPlan.unitTestFiles,
+        checks: testPlan.checks,
+        request,
+        ...options,
+      });
+      // A completed operator handoff supersedes old preparation questions.
+      // Retain the prior output/run evidence, but start a fresh authoring pass.
+      this.invalidateAfter(state, "test-plan");
+      state.conversation.push({
+        role: "operator",
+        station: "unit-tests",
+        at: now(),
+        text: `Runner preparation ${state.preparation.status}. Run ${state.preparation.runId}; artifact ${state.preparation.artifact}. ${request.reason} Read the runner's preparation record in context; prepared runtime files are separate from minimal interface scaffolds.`,
+      });
+      this.storage.save(state);
+      return state;
+    });
+  }
   async run(
     feature: string,
     station: Station,
@@ -379,6 +440,8 @@ export class Kitchen {
     return this.storage.lock(feature, async () => {
       const state = await this.status(feature);
       this.requirePrevious(state, station);
+      if (["unit-tests", "implementation", "verify"].includes(station))
+        readPreparation(this.root, state, loadConfig(this.root));
       if (state.pr)
         throw new Error(
           "Feature already published. Use a new feature for subsequent work.",
@@ -426,6 +489,7 @@ export class Kitchen {
           at: now(),
         });
       this.invalidateAfter(state, station);
+      if (docs.includes(station)) delete state.preparation;
       const record = this.record();
       state.stations[station] = record;
       this.storage.save(state);
@@ -707,12 +771,13 @@ export class Kitchen {
     if (station === "unit-tests") {
       // Scaffold proposals remain in the reviewed output/baseline snapshot; their bodies are implemented later.
       record.artifactFiles = contract.unitTestFiles;
-      if (
-        contract.unitTestFiles.some(
-          (f) => !existsSync(safePath(state.worktree, f)),
-        )
-      )
-        throw new Error("All approved unit tests must be implemented.");
+      const missing = contract.unitTestFiles.filter(
+        (file) => !existsSync(safePath(state.worktree, file)),
+      );
+      if (missing.length)
+        throw new Error(
+          `Missing approved unit test files (${missing.length}): ${missing.join(", ")}. A summary-only handoff is not a completed test submission. Return unresolved prerequisites in questions, or run kitchen prepare for approved runtime preparation.`,
+        );
     }
     if (station === "implementation")
       record.artifactFiles = contract.allowedPaths;
@@ -777,6 +842,7 @@ export class Kitchen {
   ): Promise<void> {
     const contract = this.contracts(state);
     const config = loadConfig(this.root);
+    const runtime = preparationContents(this.root, state, config);
     const target = path.join(
       this.root,
       ".kitchen",
@@ -793,8 +859,12 @@ export class Kitchen {
       state.baseCommit,
       target,
       state.worktree,
-      [...contract.unitTestFiles, ...contract.scaffoldFiles],
-      state.scaffoldContents,
+      [
+        ...contract.unitTestFiles,
+        ...contract.scaffoldFiles,
+        ...Object.keys(runtime),
+      ],
+      { ...state.scaffoldContents, ...runtime },
     );
     const candidate = await sourceFingerprint(state.worktree, state.feature);
     const baseline = await sourceFingerprint(target, state.feature);
@@ -831,6 +901,7 @@ export class Kitchen {
             commit: state.baseCommit,
             fingerprint: baseline,
             candidate,
+            preparation: state.preparation,
           },
           null,
           2,
@@ -846,6 +917,10 @@ export class Kitchen {
     return this.storage.lock(feature, async () => {
       const state = await this.status(feature);
       this.requirePrevious(state, station);
+      if (
+        ["unit-tests", "implementation", "verify", "publish"].includes(station)
+      )
+        readPreparation(this.root, state, loadConfig(this.root));
       const record = requireAwaitingApproval(state, station);
       if (!options.actor.trim())
         throw new Error("Explicit human approver required.");
@@ -892,6 +967,9 @@ export class Kitchen {
             ...docs.map((s) => this.document(state, s)),
             ...contract.unitTestFiles,
             ...(!state.testsFirstCommit ? contract.scaffoldFiles : []),
+            ...Object.keys(
+              preparationContents(this.root, state, loadConfig(this.root)),
+            ),
           ],
           state.testsFirstCommit
             ? `test(${feature}): approved requirement-based test revision`

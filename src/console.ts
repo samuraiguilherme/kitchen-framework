@@ -11,12 +11,22 @@ export function featureSummary(
     `Branch: ${state.branch}`,
     `Worktree: ${state.worktree}`,
   ];
+  if (state.preparation)
+    lines.push(
+      `Preparation: ${state.preparation.status} (${state.preparation.runId})`,
+      `Artifact: ${state.preparation.artifact}`,
+    );
   for (const station of selected ? [selected] : stationOrder) {
     const record = state.stations[station];
     if (!record) continue;
     lines.push("", `${station}: ${record.status}`);
     const summary = record.summary || record.output?.summary;
-    if (summary) lines.push(summary);
+    if (summary)
+      lines.push(
+        record.status === "stale"
+          ? `Previous run (stale): ${summary}`
+          : summary,
+      );
     for (const file of record.artifactFiles)
       lines.push(`File: ${path.resolve(state.worktree, file)}`);
     if (record.commit) lines.push(`Commit: ${record.commit}`);
@@ -43,6 +53,14 @@ export function featureSummary(
   }
   if (state.pr) {
     lines.push("", `Draft PR: ${state.pr}`);
+    return lines.join("\n");
+  }
+  if (state.preparation?.status === "failed") {
+    lines.push(
+      "",
+      "Correct the recorded preparation failure before authoring.",
+      `Next: pnpm kitchen prepare ${state.feature} --preparation <json>`,
+    );
     return lines.join("\n");
   }
   const next = stationOrder.find(

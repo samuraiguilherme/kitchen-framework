@@ -14,6 +14,7 @@ const usage = `Local Development Kitchen
   pnpm kitchen doctor
   pnpm kitchen start <feature> --request-file <path> [--issue <url>]
   pnpm kitchen run <feature> <station> [--feedback-file <path>] [--observations <json>]
+  pnpm kitchen prepare <feature> --preparation <json>
   pnpm kitchen approve <feature> <station> --actor <name> [--resolutions <json>] [--minutes <n>]
   pnpm kitchen status <feature>
   pnpm kitchen report <feature> [--output <path>]
@@ -40,6 +41,7 @@ async function main(): Promise<void> {
       feedback: { type: "string" },
       resolutions: { type: "string" },
       observations: { type: "string" },
+      preparation: { type: "string" },
       output: { type: "string" },
       labels: { type: "string" },
       minutes: { type: "string" },
@@ -132,6 +134,21 @@ async function main(): Promise<void> {
       printFeature(
         await kitchen.start(feature, { request, issue: values.issue }),
       );
+    } else if (command === "prepare") {
+      if (!values.preparation)
+        throw new Error(
+          "Supply --preparation <json> with approved runtime files, setupProfiles and check IDs.",
+        );
+      const state = await kitchen.prepare(
+        feature,
+        readJson(values.preparation),
+        {
+          signal: controller.signal,
+          onProgress: (message) => console.error(message),
+        },
+      );
+      printFeature(state);
+      if (state.preparation?.status !== "passed") process.exitCode = 1;
     } else if (command === "run") {
       const feedback = values["feedback-file"]
         ? readFileSync(path.resolve(cwd, values["feedback-file"]), "utf8")

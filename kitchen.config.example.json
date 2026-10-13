@@ -13,9 +13,18 @@
       "provider": "claude",
       "model": "sonnet"
     },
-    "timeoutMs": 600000
+    "timeoutMs": 3600000
   },
-  "stations": {},
+  "stations": {
+    "intent": { "reviewEnabled": false },
+    "spec": { "reviewEnabled": false },
+    "plan": { "reviewEnabled": false },
+    "test-plan": { "reviewEnabled": false },
+    "unit-tests": { "reviewEnabled": false },
+    "implementation": { "reviewEnabled": false },
+    "verify": { "reviewEnabled": false },
+    "publish": { "reviewEnabled": false }
+  },
   "profiles": {
     "kitchen-unit": {
       "version": "1.0.0",

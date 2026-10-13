@@ -141,6 +141,12 @@ export interface FeatureState {
   testRevisionCommits?: string[];
   testHashes?: Record<string, string>;
   scaffoldContents?: Record<string, string>;
+  preparation?: {
+    runId: string;
+    artifact: string;
+    sha256: string;
+    status: "passed" | "failed";
+  };
   pr?: string;
 }
 export interface ProviderRequest {
