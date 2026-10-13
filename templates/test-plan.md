@@ -8,6 +8,8 @@ status: draft
 
 ## Acceptance coverage
 
+Generate unique lowercase kebab-case check IDs (for example, `backend-purchases` or `manual-browser`). Use the same IDs in this table and structured checks; preserve configured profile IDs and AC-n IDs.
+
 | AC  | Check/profile | Expected behavior | Required? | Baseline RED or preservation GREEN |
 | --- | ------------- | ----------------- | --------- | ---------------------------------- |
 
@@ -21,11 +23,11 @@ Declare disposable local fixtures, candidate preview/build and expected flow evi
 
 ## Regression
 
-Name existing suites and contracts to preserve.
+Name exact existing suites and contracts to preserve, their required GREEN check IDs/profiles, and any permitted test changes. Keep this exact heading.
 
 ## Required evidence
 
-Require nonzero executed tests, expected behavioral RED, final GREEN, source fingerprints and actual manual observations where needed.
+Require nonzero executed tests, per-criterion behavioral RED, final GREEN, source fingerprints and actual database/provider/browser/manual observations where needed. Identify the reports and artifacts required for each check; these are evidence requirements, not claims of execution. Keep this exact heading.
 
 ## Open decisions
 
