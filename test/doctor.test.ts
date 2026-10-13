@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { doctor } from "../src/doctor.ts";
@@ -72,6 +78,30 @@ beforeEach(() => {
 afterEach(() => vi.resetAllMocks());
 
 describe("live model readiness diagnostics", () => {
+  it("checks and probes the replacement desktop runtime without rewriting config", async () => {
+    const bin = path.join(root, "OpenAI", "Codex", "bin");
+    const missing = path.join(bin, "0000000000000000", "codex.exe");
+    const installed = path.join(bin, "1111111111111111", "codex.exe");
+    mkdirSync(path.dirname(installed), { recursive: true });
+    writeFileSync(installed, "fixture");
+    config({
+      providers: { author: { provider: "codex", executable: missing } },
+    });
+    const results = await doctor(root);
+    expect(results.find((result) => result.id === "codex-cli")).toMatchObject({
+      status: "passed",
+      reason: `${installed}: Available`,
+    });
+    expect(probes()[0]?.command).toBe(installed);
+    expect(
+      run.mock.calls.some(
+        ([request]) =>
+          request.command === installed &&
+          request.args.join(" ") === "login status",
+      ),
+    ).toBe(true);
+    expect(loadConfig(root).providers.author.executable).toBe(missing);
+  });
   it("ignores disabled reviewers and the unused publish author", async () => {
     config({
       providers: {

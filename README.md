@@ -120,7 +120,9 @@ For machine-specific settings, create root `kitchen.config.local.json` (Git-igno
 }
 ```
 
-The model and provider still come from the shared author settings. The chosen CLI reuses its saved login; Kitchen does not copy credentials, switch accounts, or require an API key for ChatGPT sign-in. A global `codex` command can resolve to an older CLI than the desktop app uses. If a model works in the app but the CLI rejects it, compare the versions and test the app's bundled executable. Doctor prints the selected executable with its version. Update the local executable path if an app update moves it; configure any additional Codex station roles the same way when needed.
+The model and provider still come from the shared author settings. The chosen CLI reuses its saved login; Kitchen does not copy credentials, switch accounts, or require an API key for ChatGPT sign-in. A global `codex` command can resolve to an older CLI than the desktop app uses. If a model works in the app but the CLI rejects it, compare the versions and test the app's bundled executable. Doctor prints the selected executable with its version. Configure any additional Codex station roles the same way when needed.
+
+If a configured `OpenAI/Codex/bin/<16-character runtime ID>/codex.exe` disappears after an app update, Kitchen resolves an installed runtime under that same `bin` directory: first the runtime on PATH, otherwise the most recently modified executable. Existing explicit executables and custom paths are preserved. Resolution happens only at launch, leaving configuration and approval fingerprints intact; process evidence and startup progress record the actual executable.
 
 To run Codex's Windows sandbox without administrator setup, add `"windowsSandbox": "unelevated"` to each Codex role you use, normally in `kitchen.config.local.json`:
 

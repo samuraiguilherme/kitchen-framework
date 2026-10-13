@@ -5,6 +5,7 @@ import { loadConfig } from "./config.ts";
 import { stationOrder } from "./domain.ts";
 import { runProcess } from "./process.ts";
 import { probeProvider } from "./providers.ts";
+import { resolveProviderExecutable } from "./provider-executable.ts";
 import type { CheckResult, RoleConfig } from "./types.ts";
 
 export async function doctor(
@@ -82,7 +83,7 @@ export async function doctor(
   }> = [];
   for (const pair of pairs) {
     const provider = pair.config.provider;
-    const command = pair.config.executable ?? provider;
+    const command = resolveProviderExecutable(provider, pair.config.executable);
     let entry = executables.find(
       (e) => e.provider === provider && e.command === command,
     );

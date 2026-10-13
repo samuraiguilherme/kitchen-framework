@@ -11,6 +11,7 @@ import path from "node:path";
 import { runProcess } from "./process.ts";
 import type { ProcessResult } from "./process.ts";
 import { providerProgress } from "./provider-progress.ts";
+import { resolveProviderExecutable } from "./provider-executable.ts";
 import type {
   AuthorOutput,
   Provider,
@@ -181,7 +182,7 @@ export function providerInvocation(
   if (model) args.push("--model", model);
   if (provider === "codex" && windowsSandbox)
     args.push("-c", `windows.sandbox="${windowsSandbox}"`);
-  return { command: executable ?? provider, args };
+  return { command: resolveProviderExecutable(provider, executable), args };
 }
 function errorMessage(value: unknown): string {
   if (typeof value === "string") {
@@ -258,6 +259,13 @@ async function invokeProvider(
   }
   // stdin avoids PowerShell interpolation and Windows command-length limits for prompts.
   const progress = providerProgress(request);
+  if (
+    invocation.command !==
+    (request.config.executable ?? request.config.provider)
+  )
+    progress.report(
+      `resolved executable after app update: ${invocation.command}`,
+    );
   progress.report(
     `starting ${request.config.provider}; model=${request.config.model ?? "CLI default"}${request.config.provider === "codex" ? `; windowsSandbox=${request.config.windowsSandbox ?? "CLI default"}` : ""}; evidence=${request.runDir}`,
   );
