@@ -36,6 +36,39 @@ export interface CheckResult {
   evidenceHashes?: Record<string, string>;
   acIds?: string[];
   observation?: string;
+  durationMs?: number;
+}
+export interface ProviderMetrics {
+  durationMs: number;
+  firstEventMs?: number;
+  firstToolMs?: number;
+  actionableOutputMs?: number;
+  toolCount: number;
+  usage?: Record<string, number>;
+}
+export interface RunMetrics {
+  startedAt: string;
+  completedAt?: string;
+  durationMs?: number;
+  humanWaitMs: number;
+  firstActionableMs?: number;
+  phases: Array<{ phase: string; durationMs: number }>;
+  promptBytes: Array<{
+    role: string;
+    sections: Record<string, number>;
+    total: number;
+  }>;
+  providers: ProviderMetrics[];
+  sourceSnapshots?: Array<{
+    phase: string;
+    fileCount: number;
+    byteCount: number;
+  }>;
+}
+export interface DiscoveryResult {
+  summary: string;
+  evidence: Array<{ path: string; line: number; hash: string }>;
+  unresolved: string[];
 }
 export interface FileChange {
   path: string;
@@ -71,6 +104,8 @@ export interface Profile {
   args?: string[];
   parser?: "vitest-json" | "playwright-json" | "exit-code";
   timeoutMs?: number;
+  parallelSafe?: boolean;
+  resourceGroup?: string;
   env?: Record<string, string>;
   fixture?: string;
   setup?: { command: string; args: string[]; timeoutMs: number };
@@ -93,6 +128,7 @@ export interface Config {
     >
   >;
   profiles: Record<string, Profile>;
+  discovery?: { enabled?: boolean };
 }
 export interface Approval {
   actor: string;
@@ -121,6 +157,7 @@ export interface StationRecord {
   reviewFingerprint?: string;
   approval?: Approval;
   error?: string;
+  metrics?: RunMetrics;
 }
 export interface FeatureState {
   version: 1;
@@ -148,6 +185,12 @@ export interface FeatureState {
     status: "passed" | "failed";
   };
   pr?: string;
+  discovery?: {
+    codeFingerprint: string;
+    specFingerprint?: string;
+    policyFingerprint: string;
+    results: DiscoveryResult[];
+  };
 }
 export interface ProviderRequest {
   station: Station;
@@ -159,6 +202,8 @@ export interface ProviderRequest {
   timeoutMs: number;
   signal?: AbortSignal;
   onProgress?: (message: string) => void;
+  kind?: "discovery";
+  onMetrics?: (metrics: ProviderMetrics) => void;
 }
 export type Provider = (request: ProviderRequest) => Promise<unknown>;
 export interface PrInput {

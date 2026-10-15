@@ -32,6 +32,142 @@ const checks = [
   },
 ];
 
+describe("station latency safeguards", () => {
+  it("records preparation before provider progress and excludes interactive waiting from machine time", async () => {
+    const setup = fixture();
+    let authors = 0;
+    const progress: string[] = [];
+    const kitchen = new Kitchen({
+      root: setup.root,
+      provider: async (request) => {
+        expect(progress[0]).toBe("Preparing approval refresh…");
+        if (++authors === 1)
+          return {
+            summary: "",
+            questions: [{ id: "scope", text: "Which answer?" }],
+            document: null,
+            files: [],
+            allowedPaths: [],
+            checks: [],
+            unitTestFiles: [],
+            scaffoldFiles: [],
+          };
+        return setup.provider(request);
+      },
+    });
+    await kitchen.start("answer", { request: "Return the requested answer." });
+    const state = await kitchen.run("answer", "intent", {
+      onProgress: (message) => progress.push(message),
+      ask: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        return "42";
+      },
+    });
+    const metrics = state.stations.intent!.metrics!;
+    expect(metrics.humanWaitMs).toBeGreaterThanOrEqual(20);
+    expect(metrics.durationMs).toBeGreaterThan(0);
+    expect(metrics.firstActionableMs).toBeGreaterThan(0);
+    expect(
+      metrics.phases.some(
+        ({ phase }) => phase === "source snapshot before provider",
+      ),
+    ).toBe(true);
+    expect(metrics.promptBytes).toHaveLength(2);
+    expect(metrics.sourceSnapshots?.[0]?.fileCount).toBeGreaterThan(0);
+    expect(
+      JSON.parse(
+        readFileSync(
+          path.join(
+            setup.root,
+            ".kitchen/features/answer/runs",
+            state.stations.intent!.runId,
+            "metrics.json",
+          ),
+          "utf8",
+        ),
+      ),
+    ).toEqual(metrics);
+  });
+
+  it("binds intent approval to the target instructions that supplied its context", async () => {
+    const setup = fixture();
+    mkdirSync(path.join(setup.root, "apps/iris-web"), { recursive: true });
+    writeFileSync(
+      path.join(setup.root, "apps/iris-web/AGENTS.md"),
+      "Use the existing board.\n",
+    );
+    git(setup.root, "add", "apps");
+    git(setup.root, "commit", "-m", "target instructions");
+    git(
+      setup.root,
+      "update-ref",
+      "refs/remotes/origin/develop",
+      git(setup.root, "rev-parse", "HEAD"),
+    );
+    await setup.kitchen.start("answer", {
+      request: "Add a button in apps/iris-web.",
+    });
+    await setup.kitchen.run("answer", "intent");
+    const approved = await setup.kitchen.approve("answer", "intent", {
+      actor: "chef",
+    });
+    writeFileSync(
+      path.join(approved.worktree, "apps/iris-web/AGENTS.md"),
+      "Changed board conventions.\n",
+    );
+    expect((await setup.kitchen.status("answer")).stations.intent?.status).toBe(
+      "stale",
+    );
+  });
+
+  it("uses discovery only as source-verified plan context and preserves serial station approval", async () => {
+    const setup = fixture();
+    const file = path.join(setup.root, "kitchen.config.json");
+    const config = JSON.parse(readFileSync(file, "utf8"));
+    config.discovery = { enabled: true };
+    writeFileSync(file, JSON.stringify(config));
+    let workers = 0;
+    const kitchen = new Kitchen({
+      root: setup.root,
+      provider: async (request) => {
+        if (request.kind === "discovery") {
+          workers++;
+          return {
+            summary: "Existing answer module",
+            evidence: [{ path: "src/answer.ts", line: 1, hash: "" }],
+            unresolved: [],
+          };
+        }
+        return setup.provider(request);
+      },
+    });
+    await kitchen.start("answer", { request: "Return 42." });
+    await expect(kitchen.run("answer", "plan")).rejects.toThrow(
+      "Approve intent",
+    );
+    for (const station of ["intent", "spec"] as const) {
+      await kitchen.run("answer", station);
+      await kitchen.approve("answer", station, { actor: "chef" });
+    }
+    const plan = await kitchen.run("answer", "plan");
+    expect(workers).toBe(2);
+    expect(plan.stations.plan?.status).toBe("awaiting-approval");
+    await expect(kitchen.run("answer", "test-plan")).rejects.toThrow(
+      "Approve plan",
+    );
+    await kitchen.approve("answer", "plan", { actor: "chef" });
+    await kitchen.run("answer", "test-plan");
+    expect(
+      setup.calls.find((call) => call.station === "test-plan")?.prompt,
+    ).toContain("DISCOVERY (read-only findings");
+    expect(workers).toBe(2);
+    await kitchen.run("answer", "intent");
+    expect(
+      setup.calls.filter((call) => call.station === "intent").at(-1)?.prompt,
+    ).not.toContain("DISCOVERY (read-only findings");
+  });
+});
+
 function git(root: string, ...args: string[]) {
   return execFileSync("git", args, {
     cwd: root,

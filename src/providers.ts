@@ -74,9 +74,29 @@ export const reviewSchema = object({
   summary: str,
   findings: { type: "array", items: findingSchema },
 });
+export const discoverySchema = object({
+  summary: str,
+  evidence: {
+    type: "array",
+    items: object({
+      path: str,
+      line: { type: "integer", minimum: 1 },
+      hash: str,
+    }),
+  },
+  unresolved: strings,
+});
 const ajv = new Ajv({ allErrors: true });
 const authorValidator = ajv.compile(authorSchema);
 const reviewValidator = ajv.compile(reviewSchema);
+const discoveryValidator = ajv.compile(discoverySchema);
+export function validateDiscoveryOutput(value: unknown) {
+  if (!discoveryValidator(value))
+    throw new Error(
+      `Invalid discovery output: ${ajv.errorsText(discoveryValidator.errors)}`,
+    );
+  return value as unknown as import("./types.ts").DiscoveryResult;
+}
 export function validateAuthorOutput(value: unknown): AuthorOutput {
   if (!authorValidator(value))
     throw new Error(
@@ -235,7 +255,12 @@ async function invokeProvider(
   probe = false,
 ): Promise<unknown> {
   mkdirSync(request.runDir, { recursive: true });
-  const schema = request.role === "author" ? authorSchema : reviewSchema;
+  const schema =
+    request.kind === "discovery"
+      ? discoverySchema
+      : request.role === "author"
+        ? authorSchema
+        : reviewSchema;
   const schemaFile = path.join(request.runDir, `${request.role}-schema.json`);
   const answerFile = path.join(request.runDir, `${request.role}-answer.json`);
   writeFileSync(schemaFile, JSON.stringify(schema));
@@ -274,6 +299,7 @@ async function invokeProvider(
     15000,
   );
   let result: ProcessResult;
+  const startedAt = new Date().toISOString();
   try {
     result = await runProcess({
       ...invocation,
@@ -288,44 +314,69 @@ async function invokeProvider(
   } finally {
     clearInterval(heartbeat);
   }
-  writeFileSync(
-    path.join(request.runDir, `${request.role}-process.json`),
-    JSON.stringify(
-      {
-        ...result,
-        provider: request.config.provider,
-        model: request.config.model ?? null,
-        windowsSandbox: request.config.windowsSandbox ?? null,
-        executable: invocation.command,
-        cwd: request.cwd,
-      },
-      null,
-      2,
-    ),
-  );
+  const metrics = progress.metrics();
+  const processEvidence = {
+    ...result,
+    provider: request.config.provider,
+    model: request.config.model ?? null,
+    windowsSandbox: request.config.windowsSandbox ?? null,
+    executable: invocation.command,
+    cwd: request.cwd,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    metrics,
+  };
+  const saveProcess = () =>
+    writeFileSync(
+      path.join(request.runDir, `${request.role}-process.json`),
+      JSON.stringify(processEvidence, null, 2),
+    );
   progress.report(
     `process exited; code=${result.code}${result.failureReason ? `; ${result.failureReason}` : ""}`,
   );
-  if (result.code !== 0)
+  if (result.code !== 0) {
+    saveProcess();
+    request.onMetrics?.(metrics);
     throw new Error(
       `${request.config.provider} ${result.cancelled ? "cancelled" : result.timedOut ? "timed out" : "failed"}: ${result.failureReason ?? processError(request.config.provider, result)}`,
     );
-  const raw =
-    request.config.provider === "codex"
-      ? readFileSync(answerFile, "utf8")
-      : result.stdout;
-  const output = parseProviderOutput(request.config.provider, raw);
-  writeFileSync(
-    path.join(request.runDir, `${request.role}-output.json`),
-    JSON.stringify(output, null, 2),
-  );
-  return output;
+  }
+  try {
+    const raw =
+      request.config.provider === "codex"
+        ? readFileSync(answerFile, "utf8")
+        : result.stdout;
+    const output = parseProviderOutput(request.config.provider, raw);
+    if (request.kind === "discovery") validateDiscoveryOutput(output);
+    else if (request.role === "author") validateAuthorOutput(output);
+    else validateReviewOutput(output);
+    metrics.actionableOutputMs = metrics.durationMs;
+    if (request.config.provider === "claude") {
+      const envelope = JSON.parse(result.stdout);
+      if (envelope.usage)
+        metrics.usage = Object.fromEntries(
+          Object.entries(envelope.usage).filter(
+            (entry): entry is [string, number] => typeof entry[1] === "number",
+          ),
+        );
+    }
+    writeFileSync(
+      path.join(request.runDir, `${request.role}-output.json`),
+      JSON.stringify(output, null, 2),
+    );
+    return output;
+  } finally {
+    saveProcess();
+    request.onMetrics?.(metrics);
+  }
 }
 export const hostedProvider: Provider = async (request) => {
   const output = await invokeProvider(request);
-  return request.role === "author"
-    ? validateAuthorOutput(output)
-    : validateReviewOutput(output);
+  return request.kind === "discovery"
+    ? validateDiscoveryOutput(output)
+    : request.role === "author"
+      ? validateAuthorOutput(output)
+      : validateReviewOutput(output);
 };
 
 export async function probeProvider(

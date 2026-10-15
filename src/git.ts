@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { execute } from "./process.ts";
-import { digest, safePath } from "./domain.ts";
+import { fileDigests, hash, safePath } from "./domain.ts";
 
 export const git = (root: string, ...args: string[]) =>
   execute("git", args, root);
@@ -33,11 +33,36 @@ export async function sourceFiles(
         ),
   );
 }
+export interface SourceSnapshot {
+  fingerprint: string;
+  codeFingerprint: string;
+  fileCount: number;
+  byteCount: number;
+}
+export async function sourceSnapshot(
+  root: string,
+  feature: string,
+): Promise<SourceSnapshot> {
+  const { entries, byteCount } = fileDigests(
+    root,
+    await sourceFiles(root, feature),
+  );
+  return {
+    fingerprint: hash(JSON.stringify(entries)),
+    codeFingerprint: hash(
+      JSON.stringify(
+        entries.filter(([file]) => !file.startsWith(`docs/features/${feature}/`)),
+      ),
+    ),
+    fileCount: entries.length,
+    byteCount,
+  };
+}
 export async function sourceFingerprint(
   root: string,
   feature: string,
 ): Promise<string> {
-  return digest(root, await sourceFiles(root, feature));
+  return (await sourceSnapshot(root, feature)).fingerprint;
 }
 export async function commitFiles(
   root: string,

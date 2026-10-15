@@ -3,6 +3,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -10,6 +11,7 @@ import net from "node:net";
 import spawn from "cross-spawn";
 import { finding, hash, safePath } from "./domain.ts";
 import { runProcess, stopProcess } from "./process.ts";
+import { executeSetup } from "./setup-runner.ts";
 import type {
   CheckDefinition,
   CheckResult,
@@ -298,7 +300,7 @@ async function freePort(): Promise<number> {
     });
   });
 }
-export async function executeCheck(input: {
+export interface ExecuteCheckInput {
   definition: CheckDefinition;
   profile: Profile;
   root: string;
@@ -307,7 +309,19 @@ export async function executeCheck(input: {
   green: boolean;
   signal?: AbortSignal;
   observations?: ManualObservation[];
-}): Promise<CheckResult> {
+}
+
+export async function executeCheck(
+  input: ExecuteCheckInput,
+): Promise<CheckResult> {
+  return executeOne(input);
+}
+
+async function executeOne(
+  input: ExecuteCheckInput,
+  preparedSetup?: Awaited<ReturnType<typeof executeSetup>>,
+): Promise<CheckResult> {
+  const started = performance.now();
   const { definition: check, profile, root, runDir, fingerprint } = input;
   const testFiles = check.files.map((file) => safePath(root, file));
   const result: CheckResult = {
@@ -323,6 +337,7 @@ export async function executeCheck(input: {
   const evidenceFile = path.join(runDir, `check-${check.id}.json`);
   result.evidence = evidenceFile;
   const finish = () => {
+    result.durationMs = performance.now() - started;
     writeFileSync(evidenceFile, JSON.stringify(result, null, 2));
     result.evidenceHashes = Object.fromEntries(
       readdirSync(runDir)
@@ -334,6 +349,11 @@ export async function executeCheck(input: {
     );
     return result;
   };
+  if (input.signal?.aborted) {
+    result.status = "failed";
+    result.reason = "Check cancelled.";
+    return finish();
+  }
   if (profile.kind === "manual") {
     const observation = input.observations?.find((o) => o.id === check.id);
     if (
@@ -400,18 +420,14 @@ export async function executeCheck(input: {
   let previewLog = "";
   try {
     if (profile.setup) {
-      const startedAt = new Date().toISOString();
-      const setup = await runProcess({
-        ...profile.setup,
-        cwd,
-        signal: input.signal,
-      });
+      const setup =
+        preparedSetup ??
+        (await executeSetup({ root, cwd, profile, signal: input.signal }));
       writeFileSync(
         path.join(runDir, `setup-${check.id}.json`),
         JSON.stringify({
           ...setup,
-          startedAt,
-          finishedAt: new Date().toISOString(),
+          sharedSetup: preparedSetup !== undefined,
           profile: check.profile,
           cwd,
           ...profile.setup,
@@ -570,4 +586,125 @@ export async function executeCheck(input: {
       writeFileSync(path.join(runDir, `preview-${check.id}.log`), previewLog);
     }
   }
+}
+
+/** Run explicitly independent checks, keeping exclusive checks as barriers. */
+export async function executeChecks(
+  input: Omit<ExecuteCheckInput, "definition" | "profile"> & {
+    definitions: CheckDefinition[];
+    profiles: Record<string, Profile>;
+  },
+): Promise<CheckResult[]> {
+  const results: CheckResult[] = [];
+  const setups = new Map<string, Awaited<ReturnType<typeof executeSetup>>>();
+  const setupKeys = new Map<string, string>();
+  // Complete all dependency writes before launching any concurrent readers.
+  for (const definition of input.definitions) {
+    const profile = input.profiles[definition.profile];
+    if (!profile)
+      throw new Error(`Unknown check profile: ${definition.profile}`);
+    if (!profile.setup || profile.kind === "manual") continue;
+    const cwd =
+      profile.cwd && profile.cwd !== "."
+        ? safePath(input.root, profile.cwd)
+        : input.root;
+    const key = JSON.stringify({ cwd, setup: profile.setup, env: profile.env });
+    setupKeys.set(definition.profile, key);
+    if (!setups.has(key))
+      setups.set(
+        key,
+        await executeSetup({
+          root: input.root,
+          cwd,
+          profile,
+          signal: input.signal,
+        }),
+      );
+  }
+  const pending = input.definitions.map((_, index) => index);
+  const active = new Map<number, Promise<void>>();
+  const groups = new Set<string>();
+  let exclusiveActive = false;
+  let failure: unknown;
+  const profileAt = (index: number) =>
+    input.profiles[input.definitions[index]!.profile]!;
+  const parallel = (index: number) => {
+    const profile = profileAt(index);
+    return (
+      profile.parallelSafe === true &&
+      !["browser", "manual"].includes(profile.kind)
+    );
+  };
+  const groupsAt = (index: number) => {
+    const profile = profileAt(index);
+    const directory =
+      profile.cwd && profile.cwd !== "."
+        ? safePath(input.root, profile.cwd)
+        : input.root;
+    const cwd = existsSync(directory)
+      ? realpathSync(directory)
+      : path.resolve(directory);
+    const canonical = (value: string) =>
+      process.platform === "win32" ? value.toLowerCase() : value;
+    const resources = [
+      profile.resourceGroup === undefined
+        ? `cwd:${canonical(cwd)}`
+        : `group:${profile.resourceGroup}`,
+    ];
+    if (profile.fixture) {
+      const fixture = safePath(input.root, profile.fixture);
+      resources.push(
+        `fixture:${canonical(existsSync(fixture) ? realpathSync(fixture) : fixture)}`,
+      );
+    }
+    return resources;
+  };
+  const start = (index: number) => {
+    const definition = input.definitions[index]!;
+    const resources = groupsAt(index);
+    const exclusive = !parallel(index);
+    if (exclusive) exclusiveActive = true;
+    for (const resource of resources) groups.add(resource);
+    const execution = executeOne(
+      { ...input, definition, profile: profileAt(index) },
+      setups.get(setupKeys.get(definition.profile) ?? ""),
+    )
+      .then((result) => {
+        results[index] = result;
+      })
+      .catch((error) => {
+        failure ??= error;
+      })
+      .finally(() => {
+        active.delete(index);
+        for (const resource of resources) groups.delete(resource);
+        if (exclusive) exclusiveActive = false;
+      });
+    active.set(index, execution);
+  };
+  while (pending.length || active.size) {
+    if (failure !== undefined) {
+      await Promise.all(active.values());
+      throw failure;
+    }
+    if (exclusiveActive) {
+      // Manual observations, browser builds and unopted-in profiles run alone.
+    } else if (pending.length && !parallel(pending[0]!)) {
+      if (!active.size) start(pending.shift()!);
+    } else {
+      for (let position = 0; position < pending.length && active.size < 2; ) {
+        const index = pending[position]!;
+        if (!parallel(index)) break;
+        if (groupsAt(index).some((resource) => groups.has(resource))) {
+          position++;
+          continue;
+        }
+        pending.splice(position, 1);
+        start(index);
+      }
+    }
+    if (active.size) await Promise.race(active.values());
+  }
+  if (failure !== undefined) throw failure;
+  return results;
 }

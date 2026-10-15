@@ -248,6 +248,102 @@ Label JSON maps IDs such as `spec-acceptable` and `spec-flawed` to `acceptable` 
 
 ## Persistence, cancellation and recovery
 
+### Station latency and bounded parallelism
+
+Progress starts before approval refresh, source scans and context construction.
+Every station run retains `metrics.json` beside its evidence: monotonic phase
+durations, prompt-section byte counts, source file/byte counts, provider timings,
+tool counts and available usage. Machine duration excludes time spent answering
+interactive questions. `report` includes station timing; old runs show unavailable
+metrics rather than inferred zeroes. Provider process records include start/end
+timestamps and metrics, with timestamped event metadata in a separate
+`<role>-timing-events.jsonl`; raw event logs remain unchanged. A startup event or
+heartbeat is not an actionable answer.
+
+Intent receives focused product context. Later prompts include authoritative
+documents once, compact station/check metadata and source diffs without repeating
+feature documents or past file proposals. Providers still use fresh read-only
+sessions. Source scans retain full mutation detection and identical fingerprints;
+directory resolution is reused only inside one scan.
+
+Dependency setup is cached under each worktree's `.kitchen/cache/setup`, keyed by
+dependency/workspace contents, runtime, pnpm version, environment and setup
+command. Successful installation markers must still match. Installs are
+serialized; shared setup finishes before checks start. A stale install lock fails
+with its exact path so an operator can inspect ownership before removing it.
+Failed infrastructure never counts as behavioral RED.
+
+Check profiles can opt into a maximum of two concurrent checks with
+`"parallelSafe": true`. An optional nonempty `resourceGroup` names a shared
+resource; by default checks sharing a cwd serialize. Browser, manual and
+unopted-in profiles always run alone. Results and evidence retain manifest order.
+Required checks still execute at both implementation and verification.
+
+Optional `"discovery": { "enabled": true }` in Kitchen configuration runs two
+read-only agents at plan: implementation/conventions and tests/runtime readiness.
+Their cited findings are source-verified, cached and reused downstream; one author
+integrates them. They cannot write or replace independent review, executable
+checks or any of the eight human approvals. This consumes additional model calls
+and defaults to disabled until matched measurements establish a net improvement.
+
+Reproduce the bounded hashing comparison without provider calls:
+
+```powershell
+pnpm --filter @hirebus/kitchen exec tsx scripts/benchmark-hashing.ts --files 500 --iterations 3
+pnpm --filter @hirebus/kitchen exec tsx scripts/benchmark-intent.ts --baseline-ref HEAD --iterations 3 --offline
+```
+
+The intent harness uses matched synthetic initial/resume inputs and records the
+actual source guards. `--offline` measures context and local overhead without
+model calls; omit both flags for a dry run. Explicit `--live` sends repository
+context to the configured author in four fresh read-only calls per iteration,
+retaining raw evidence and never applying proposals or recording approvals.
+`--provider-timeout-ms` sets an equal cap for both modes (default 120000,
+bounded by the configured provider timeout). Pin `--baseline-ref` to the original
+commit when evaluating after the optimizations have been committed.
+
+Initial 500-file comparisons measured 3.1–3.5 seconds before versus 0.6–0.7
+seconds after, with identical hashes. A full 10,476-file comparison measured
+89.81 seconds before versus 13.69 seconds after (6.56x), also with identical
+hashes. Three matched offline initial/resume comparisons reduced prompt sizes
+by 19.4%/21.1%; all twelve source guards matched. A historical unit-tests prompt rebuilt
+against the same saved state shrank from 837,630 to 304,879 bytes (63.6%). These
+are component measurements, not claims of end-to-end model latency improvement.
+For end-to-end comparisons, hold model/source/answers fixed, separate initial
+intent from answered resumes, exclude human wait, and compare three matched runs
+plus a complete feature workflow. Keep discovery disabled unless total time
+improves; targets are 50% lower median first actionable intent latency and 30%
+lower total machine time.
+
+A live sorting-workload comparison on 2026-10-15 completed three matched
+initial/resume pairs (12 fresh Codex calls, same `gpt-6.1-sol` model, inherited
+reasoning setting and source). Pair order alternated; resumed calls used the same
+fixed question and operator answers. Median machine times, including source
+guards before and after the provider, were:
+
+| Intent workload | Original prompts | Focused prompts | Reduction |
+| --- | --- | --- | --- |
+| Initial useful response | 100.2 s | 54.9 s | 45.3% |
+| Draft after fixed answers | 215.0 s | 84.0 s | 60.9% |
+| Initial plus answered resume | 310.1 s | 143.9 s | 53.6% |
+
+All 24 source guards matched; all six resumed documents passed schema and blocking
+intent lint. Focused prompts made zero tool calls versus 114 across baseline
+calls. Both arms used the current source guards and provider adapter, so this
+isolates intent prompt/context changes, not the complete original/current
+runner. The 50% initial-response target was narrowly missed; the full
+eight-station 30% target remains unmeasured. Existing sorting code was present in
+the shared checkout. No implementation, approvals or publication occurred in
+this live benchmark. Discovery remains disabled because its net benefit has not
+been measured.
+
+Raw evidence and computed assessment are retained locally under
+`.kitchen/benchmarks/22a75762-635b-44d4-bb44-cf6f4b383a98/assessment.json`.
+The earlier 120-second pilot is excluded: baseline resume timed out, and one
+pre-provider source scan took 176 seconds. The main run used an equal 300-second
+cap throughout, with source scans of 2.46–4.85 seconds. Investigate that startup
+outlier separately before attributing it to a cache or filesystem cause.
+
 `.kitchen/features/<feature>/` contains atomic JSON state, approvals, conversations, raw transcripts, evidence, publication preview/body and per-run IDs. Worktrees are in `.kitchen/worktrees/`; detached RED baselines are retained in `.kitchen/baselines/` for diagnosis. Everything under `.kitchen/` is ignored.
 
 Ctrl+C cancels owned provider/check subprocess trees. Finite timeouts prevent unattended hangs. Per-feature process locks reject concurrent mutations; the next command recovers a dead process's running station as failed, requiring a rerun. Provider/schema failures remain inspectable and retryable. Raw local files are trusted operator storage, not an access-control boundary.

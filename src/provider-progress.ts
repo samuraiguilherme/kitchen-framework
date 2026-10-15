@@ -1,6 +1,7 @@
 import { appendFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { ProviderRequest } from "./types.ts";
+import { performance } from "node:perf_hooks";
+import type { ProviderMetrics, ProviderRequest } from "./types.ts";
 
 // Restrict fail-fast to known sandbox setup failures, not ordinary tool exits or prose.
 const sandboxFailure =
@@ -13,13 +14,20 @@ export function providerProgress(request: ProviderRequest) {
   };
   writeFileSync(files.stdout, "");
   writeFileSync(files.stderr, "");
+  const timingsFile = path.join(
+    request.runDir,
+    `${request.role}-timing-events.jsonl`,
+  );
+  writeFileSync(timingsFile, "");
   const pending = { stdout: "", stderr: "" };
-  const started = Date.now();
+  const started = performance.now();
+  const metrics: ProviderMetrics = { durationMs: 0, toolCount: 0 };
+  const tools = new Set<string>();
   const report = (message: string) =>
     request.onProgress?.(
       // Strip terminal controls from provider-supplied progress text.
       // eslint-disable-next-line no-control-regex
-      `[${request.station}/${request.role} ${Math.round((Date.now() - started) / 1000)}s] ${message.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, 500)}`,
+      `[${request.station}/${request.role} ${Math.round((performance.now() - started) / 1000)}s] ${message.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, 500)}`,
     );
   const line = (
     stream: "stdout" | "stderr",
@@ -38,6 +46,28 @@ export function providerProgress(request: ProviderRequest) {
       return;
     }
     const item = event?.item;
+    const elapsedMs = performance.now() - started;
+    metrics.firstEventMs ??= elapsedMs;
+    appendFileSync(
+      timingsFile,
+      JSON.stringify({
+        elapsedMs,
+        type: event.type,
+        itemType: item?.type,
+        itemId: item?.id,
+      }) + "\n",
+    );
+    if (["command_execution", "mcp_tool_call"].includes(item?.type)) {
+      metrics.firstToolMs ??= elapsedMs;
+      tools.add(item.id ?? `${item.type}:${item.command ?? item.tool}`);
+      metrics.toolCount = tools.size;
+    }
+    if (event?.usage && typeof event.usage === "object")
+      metrics.usage = Object.fromEntries(
+        Object.entries(event.usage).filter(
+          (entry): entry is [string, number] => typeof entry[1] === "number",
+        ),
+      );
     if (item?.type === "command_execution") {
       if (event.type === "item.started")
         report(`tool started: ${item.command}`);
@@ -67,6 +97,9 @@ export function providerProgress(request: ProviderRequest) {
   };
   return {
     report,
+    metrics(): ProviderMetrics {
+      return { ...metrics, durationMs: performance.now() - started };
+    },
     capture(stream: "stdout" | "stderr", chunk: string): string | undefined {
       // Persist before notifying the terminal or stopping the process.
       appendFileSync(files[stream], chunk);

@@ -15,6 +15,7 @@
     },
     "timeoutMs": 3600000
   },
+  "discovery": { "enabled": false },
   "stations": {
     "intent": { "reviewEnabled": false },
     "spec": { "reviewEnabled": false },
@@ -29,6 +30,7 @@
     "kitchen-unit": {
       "version": "1.0.0",
       "kind": "unit",
+      "parallelSafe": true,
       "cwd": "tools/kitchen",
       "command": "pnpm",
       "args": ["exec", "vitest", "run", "{files}", "--reporter=json"],
@@ -50,6 +52,7 @@
     "crm-unit": {
       "version": "1.0.0",
       "kind": "unit",
+      "parallelSafe": true,
       "cwd": "apps/crm",
       "command": "pnpm",
       "args": ["exec", "vitest", "run", "{files}", "--reporter=json"],
@@ -71,6 +74,7 @@
     "iris-web-unit": {
       "version": "1.0.0",
       "kind": "unit",
+      "parallelSafe": true,
       "cwd": "apps/iris-web",
       "command": "pnpm",
       "args": ["exec", "vitest", "run", "{files}", "--reporter=json"],
@@ -92,6 +96,7 @@
     "client-unit": {
       "version": "1.0.0",
       "kind": "unit",
+      "parallelSafe": true,
       "cwd": "apps/v3-client",
       "command": "pnpm",
       "args": [
@@ -120,6 +125,7 @@
     "admin-unit": {
       "version": "1.0.0",
       "kind": "unit",
+      "parallelSafe": true,
       "cwd": "apps/v3-admin",
       "command": "pnpm",
       "args": ["exec", "vitest", "run", "{files}", "--reporter=json"],
@@ -141,6 +147,7 @@
     "jobs-unit": {
       "version": "1.0.0",
       "kind": "unit",
+      "parallelSafe": true,
       "cwd": "apps/v3-jobs",
       "command": "pnpm",
       "args": ["exec", "vitest", "run", "{files}", "--reporter=json"],
@@ -162,6 +169,7 @@
     "iris-ui-unit": {
       "version": "1.0.0",
       "kind": "unit",
+      "parallelSafe": true,
       "cwd": "packages/iris-ui",
       "command": "pnpm",
       "args": [
@@ -191,6 +199,7 @@
     "supabase-unit": {
       "version": "1.0.0",
       "kind": "unit",
+      "parallelSafe": true,
       "cwd": "packages/supabase",
       "command": "pnpm",
       "args": ["exec", "vitest", "run", "{files}", "--reporter=json"],
@@ -212,6 +221,7 @@
     "utils-unit": {
       "version": "1.0.0",
       "kind": "unit",
+      "parallelSafe": true,
       "cwd": "packages/utils",
       "command": "pnpm",
       "args": ["exec", "vitest", "run", "{files}", "--reporter=json"],

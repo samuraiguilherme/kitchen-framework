@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import ts from "typescript";
 import {
   acceptanceIds,
@@ -21,7 +22,7 @@ import {
   validateFeature,
 } from "./domain.ts";
 import { loadConfig } from "./config.ts";
-import { executeCheck, validateCheckPlan } from "./checks.ts";
+import { executeChecks, validateCheckPlan } from "./checks.ts";
 import {
   baselineWorktree,
   commitFiles,
@@ -29,6 +30,7 @@ import {
   git,
   sourceFiles,
   sourceFingerprint,
+  sourceSnapshot,
 } from "./git.ts";
 import { GitHub } from "./github.ts";
 import {
@@ -37,6 +39,10 @@ import {
   validateReviewOutput,
 } from "./providers.ts";
 import { instructions, rubric, stationPrompt } from "./prompts.ts";
+import { buildContext, targetPaths } from "./context.ts";
+import { discover, discoveryPolicy } from "./discovery.ts";
+import { promptSections, runMetrics, timed } from "./metrics.ts";
+import { executeSetup } from "./setup-runner.ts";
 import { Storage } from "./storage.ts";
 import { normalizeTestPlan } from "./test-plan.ts";
 import {
@@ -55,6 +61,7 @@ import type {
   Provider,
   Station,
   StationRecord,
+  RunMetrics,
 } from "./types.ts";
 
 const docs = ["intent", "spec", "plan", "test-plan"];
@@ -76,6 +83,7 @@ interface RunOptions {
   signal?: AbortSignal;
   observations?: ManualObservation[];
   onProgress?: (message: string) => void;
+  metrics?: RunMetrics;
 }
 interface ApproveOptions {
   actor: string;
@@ -143,6 +151,7 @@ export class Kitchen {
   private async fingerprint(
     state: FeatureState,
     station: Station,
+    sourceSnapshot?: string,
   ): Promise<string> {
     const index = stationOrder.indexOf(station);
     const upstream = stationOrder.slice(0, index).map((s) => ({
@@ -153,7 +162,8 @@ export class Kitchen {
     const record = state.stations[station];
     const artifact = digest(state.worktree, record?.artifactFiles ?? []);
     const source = ["implementation", "verify", "publish"].includes(station)
-      ? await sourceFingerprint(state.worktree, state.feature)
+      ? (sourceSnapshot ??
+        (await sourceFingerprint(state.worktree, state.feature)))
       : null;
     const config = loadConfig(this.root);
     const stationConfig = config.stations[station];
@@ -169,6 +179,10 @@ export class Kitchen {
           ? (stationConfig.review ?? config.providers.review)
           : undefined,
         timeoutMs: config.providers.timeoutMs,
+        discovery:
+          index >= 2 && config.discovery?.enabled
+            ? config.discovery
+            : undefined,
       },
       profiles: [
         "test-plan",
@@ -200,7 +214,7 @@ export class Kitchen {
         rubric: rubric(station),
         instructions: instructions(
           state.worktree,
-          index >= 2 ? state.stations.plan?.output?.allowedPaths : [],
+          targetPaths(state, index >= 2),
         ),
         output: record?.output,
         findings: record?.findings,
@@ -223,14 +237,21 @@ export class Kitchen {
   }
   private async refresh(state: FeatureState): Promise<FeatureState> {
     let stale = false;
+    let source: string | undefined;
     for (const station of stationOrder) {
       const record = state.stations[station];
       if (!record) continue;
       if (
+        !stale &&
+        record.status === "approved" &&
+        ["implementation", "verify", "publish"].includes(station)
+      )
+        source ??= await sourceFingerprint(state.worktree, state.feature);
+      if (
         record.status === "approved" &&
         (stale ||
           record.approval?.fingerprint !==
-            (await this.fingerprint(state, station)))
+            (await this.fingerprint(state, station, source)))
       ) {
         record.status = "stale";
         stale = true;
@@ -305,23 +326,11 @@ export class Kitchen {
         "Accepted unit-tests and a tests-first commit are required.",
       );
   }
-  private async context(state: FeatureState): Promise<string> {
-    const config = loadConfig(this.root);
-    return [
-      instructions(state.worktree, state.stations.plan?.output?.allowedPaths),
-      ...docs.map(
-        (s) =>
-          `DOCUMENT ${this.document(state, s)}\n${this.readDocument(state, s)}`,
-      ),
-      `CHECK PROFILES (human-controlled):\n${JSON.stringify(config.profiles)}`,
-      `LOCAL RUN STATE AND EXECUTABLE EVIDENCE:\n${JSON.stringify(state.stations)}`,
-      `RUNNER PREPARATION (operator-owned runtime support, not minimal scaffolds):\n${JSON.stringify(
-        readPreparation(this.root, state, config) ?? null,
-      )}\nArtifact: ${state.preparation?.artifact ?? "not prepared"}`,
-      `BASELINE: ${state.baseCommit}; TESTS-FIRST COMMIT: ${state.testsFirstCommit ?? "not yet recorded"}`,
-      `DIFF:\n${await git(state.worktree, "diff", state.baseCommit, "--", ".", ":!.kitchen")}`,
-      `UNTRACKED FILES:\n${await git(state.worktree, "ls-files", "--others", "--exclude-standard")}`,
-    ].join("\n\n");
+  private async context(
+    state: FeatureState,
+    station: Station,
+  ): Promise<string> {
+    return buildContext(state, station, this.root);
   }
   private record(): StationRecord {
     const config = loadConfig(this.root);
@@ -351,33 +360,108 @@ export class Kitchen {
   ): Promise<unknown> {
     if (options.signal?.aborted) throw new Error("Station cancelled.");
     const config = loadConfig(this.root);
-    const context = await this.context(state);
-    const before = await sourceFingerprint(state.worktree, state.feature);
+    const before = await timed(
+      options.metrics,
+      "source snapshot before provider",
+      () => sourceSnapshot(state.worktree, state.feature),
+      options.onProgress,
+    );
+    if (options.metrics)
+      (options.metrics.sourceSnapshots ??= []).push({
+        phase: "before provider",
+        fileCount: before.fileCount,
+        byteCount: before.byteCount,
+      });
+    let context = await timed(
+      options.metrics,
+      "station context",
+      () => this.context(state, station),
+      options.onProgress,
+    );
+    if (station === "plan" && role === "author" && config.discovery?.enabled) {
+      const results = await timed(
+        options.metrics,
+        "parallel discovery",
+        () =>
+          discover({
+            root: this.root,
+            state,
+            config,
+            codeFingerprint: before.codeFingerprint,
+            provider: this.provider,
+            runDir,
+            signal: options.signal,
+            onProgress: options.onProgress,
+            onMetrics: (metrics) => options.metrics?.providers.push(metrics),
+          }),
+        options.onProgress,
+      );
+      if (
+        (await timed(options.metrics, "source snapshot after discovery", () =>
+          sourceFingerprint(state.worktree, state.feature),
+        )) !== before.fingerprint
+      )
+        throw new Error(
+          "Discovery provider changed repository contents outside the runner.",
+        );
+      state.discovery = {
+        codeFingerprint: before.codeFingerprint,
+        specFingerprint: state.stations.spec?.approval?.fingerprint,
+        policyFingerprint: discoveryPolicy(config),
+        results,
+      };
+    }
+    if (
+      !["intent", "spec"].includes(station) &&
+      config.discovery?.enabled &&
+      state.discovery?.codeFingerprint === before.codeFingerprint &&
+      state.discovery.specFingerprint ===
+        state.stations.spec?.approval?.fingerprint &&
+      state.discovery.policyFingerprint === discoveryPolicy(config)
+    )
+      context += `\n\nDISCOVERY (read-only findings; acceptance still belongs to this station):\n${JSON.stringify(state.discovery.results)}`;
     const artifacts = digest(
       state.worktree,
       state.stations[station]?.artifactFiles ?? [],
     );
-    const output = await this.provider({
+    const prompt = stationPrompt(
+      state,
       station,
       role,
-      prompt: stationPrompt(
-        state,
-        station,
-        role,
-        context,
-        options.feedback,
-        config.stations[station]?.reviewEnabled,
-      ),
-      cwd: state.worktree,
-      runDir: path.join(runDir, role + suffix),
-      config: config.stations[station]?.[role] ?? config.providers[role],
-      timeoutMs: config.providers.timeoutMs,
-      signal: options.signal,
-      onProgress: options.onProgress,
+      context,
+      options.feedback,
+      config.stations[station]?.reviewEnabled,
+    );
+    options.metrics?.promptBytes.push({
+      role: role + suffix,
+      sections: promptSections(prompt),
+      total: Buffer.byteLength(prompt),
     });
+    const output = await timed(
+      options.metrics,
+      `${role}${suffix} provider`,
+      () =>
+        this.provider({
+          station,
+          role,
+          prompt,
+          cwd: state.worktree,
+          runDir: path.join(runDir, role + suffix),
+          config: config.stations[station]?.[role] ?? config.providers[role],
+          timeoutMs: config.providers.timeoutMs,
+          signal: options.signal,
+          onProgress: options.onProgress,
+          onMetrics: (metrics) => options.metrics?.providers.push(metrics),
+        }),
+    );
     if (options.signal?.aborted) throw new Error("Station cancelled.");
     if (
-      (await sourceFingerprint(state.worktree, state.feature)) !== before ||
+      (await timed(
+        options.metrics,
+        "source snapshot after provider",
+        () => sourceFingerprint(state.worktree, state.feature),
+        options.onProgress,
+      )) !== before.fingerprint ||
       digest(state.worktree, state.stations[station]?.artifactFiles ?? []) !==
         artifacts
     )
@@ -438,7 +522,29 @@ export class Kitchen {
     if (!stationOrder.includes(station) || station === "publish")
       throw new Error("Use publish --preview for the publish station.");
     return this.storage.lock(feature, async () => {
-      const state = await this.status(feature);
+      const started = performance.now();
+      const metrics = runMetrics();
+      const ask = options.ask;
+      options = {
+        ...options,
+        metrics,
+        ask: ask
+          ? async (question) => {
+              const waiting = performance.now();
+              try {
+                return await ask(question);
+              } finally {
+                metrics.humanWaitMs += performance.now() - waiting;
+              }
+            }
+          : undefined,
+      };
+      const state = await timed(
+        metrics,
+        "approval refresh",
+        () => this.status(feature),
+        options.onProgress,
+      );
       this.requirePrevious(state, station);
       if (["unit-tests", "implementation", "verify"].includes(station))
         readPreparation(this.root, state, loadConfig(this.root));
@@ -491,6 +597,7 @@ export class Kitchen {
       this.invalidateAfter(state, station);
       if (docs.includes(station)) delete state.preparation;
       const record = this.record();
+      record.metrics = metrics;
       state.stations[station] = record;
       this.storage.save(state);
       const runDir = path.join(
@@ -503,8 +610,55 @@ export class Kitchen {
       const call = (role: "author" | "review", suffix = "") =>
         this.callProvider(state, station, role, runDir, options, suffix);
       try {
+        if (station === "unit-tests") {
+          await timed(
+            metrics,
+            "unit runtime preflight",
+            async () => {
+              const before = await sourceFingerprint(state.worktree, feature);
+              const profiles = [
+                ...new Set(
+                  this.contracts(state)
+                    .checks.filter(
+                      (check) =>
+                        config.profiles[check.profile]?.kind === "unit",
+                    )
+                    .map((check) => check.profile),
+                ),
+              ];
+              for (const id of profiles) {
+                const profile = config.profiles[id]!;
+                if (!profile.setup) continue;
+                const result = await executeSetup({
+                  root: state.worktree,
+                  cwd:
+                    profile.cwd && profile.cwd !== "."
+                      ? safePath(state.worktree, profile.cwd)
+                      : state.worktree,
+                  profile,
+                  signal: options.signal,
+                });
+                writeFileSync(
+                  path.join(runDir, `preflight-${id}.json`),
+                  JSON.stringify(result, null, 2),
+                );
+                if (result.code !== 0)
+                  throw new Error(
+                    `Unit runtime preflight failed for ${id}; no author was called. Resolve dependency preparation with kitchen prepare. This is infrastructure, never behavioral RED.`,
+                  );
+              }
+              if ((await sourceFingerprint(state.worktree, feature)) !== before)
+                throw new Error(
+                  "Runtime preflight changed candidate source; review preparation and rerun.",
+                );
+            },
+            options.onProgress,
+          );
+        }
         let output = validateAuthorOutput(await call("author"));
         if (output.questions.length) {
+          metrics.firstActionableMs ??=
+            performance.now() - started - metrics.humanWaitMs;
           // Questions take precedence over bundled proposals. Only a fresh
           // response without questions may reach applyOutput and review.
           for (const question of output.questions) {
@@ -551,27 +705,52 @@ export class Kitchen {
         if (station === "test-plan") output = normalizeTestPlan(output);
         record.output = output;
         record.summary = output.summary;
-        await this.applyOutput(state, station, output, record);
+        await timed(
+          metrics,
+          "apply candidate",
+          () => this.applyOutput(state, station, output, record),
+          options.onProgress,
+        );
+        let checkedSource: string | undefined;
         if (station === "unit-tests") {
-          await this.unitChecks(state, record, runDir, options);
+          await timed(
+            metrics,
+            "baseline unit checks",
+            () => this.unitChecks(state, record, runDir, options),
+            options.onProgress,
+          );
         } else if (station === "implementation" || station === "verify") {
-          const before = await sourceFingerprint(state.worktree, feature);
-          for (const check of this.contracts(state).checks) {
-            const profile = config.profiles[check.profile]!;
-            record.checks.push(
-              await executeCheck({
-                definition: check,
-                profile,
-                root: state.worktree,
-                runDir,
-                fingerprint: before,
-                green: true,
-                signal: options.signal,
-                observations: options.observations,
-              }),
-            );
-          }
-          if ((await sourceFingerprint(state.worktree, feature)) !== before)
+          const before = await timed(
+            metrics,
+            "source snapshot before checks",
+            () => sourceFingerprint(state.worktree, feature),
+            options.onProgress,
+          );
+          record.checks.push(
+            ...(await timed(
+              metrics,
+              "required checks",
+              () =>
+                executeChecks({
+                  definitions: this.contracts(state).checks,
+                  profiles: config.profiles,
+                  root: state.worktree,
+                  runDir,
+                  fingerprint: before,
+                  green: true,
+                  signal: options.signal,
+                  observations: options.observations,
+                }),
+              options.onProgress,
+            )),
+          );
+          checkedSource = await timed(
+            metrics,
+            "source snapshot after checks",
+            () => sourceFingerprint(state.worktree, feature),
+            options.onProgress,
+          );
+          if (checkedSource !== before)
             throw new Error(
               "Checks changed candidate source; review the diff and rerun.",
             );
@@ -580,7 +759,12 @@ export class Kitchen {
           record.artifactFiles = [this.document(state, "verification")];
           writeFileSync(
             safePath(state.worktree, record.artifactFiles[0]!),
-            await this.renderReport(state),
+            await timed(
+              metrics,
+              "verification report",
+              () => this.renderReport(state, checkedSource),
+              options.onProgress,
+            ),
           );
         }
         if (config.stations[station]?.reviewEnabled) {
@@ -588,13 +772,32 @@ export class Kitchen {
           record.summary += "\nIndependent review: " + review.summary;
           record.findings.push(...review.findings);
         }
-        if (station === "verify")
+        if (station === "verify" && config.stations[station]?.reviewEnabled)
           writeFileSync(
             safePath(state.worktree, this.document(state, "verification")),
-            await this.renderReport(state),
+            await timed(
+              metrics,
+              "reviewed verification report",
+              () => this.renderReport(state),
+              options.onProgress,
+            ),
           );
         record.status = "awaiting-approval";
-        record.reviewFingerprint = await this.fingerprint(state, station);
+        metrics.firstActionableMs ??=
+          performance.now() - started - metrics.humanWaitMs;
+        record.reviewFingerprint = await timed(
+          metrics,
+          "approval fingerprint",
+          () =>
+            this.fingerprint(
+              state,
+              station,
+              config.stations[station]?.reviewEnabled
+                ? undefined
+                : checkedSource,
+            ),
+          options.onProgress,
+        );
         this.storage.save(state);
         return state;
       } catch (error) {
@@ -602,6 +805,14 @@ export class Kitchen {
         record.error = error instanceof Error ? error.message : String(error);
         this.storage.save(state);
         throw error;
+      } finally {
+        metrics.completedAt = now();
+        metrics.durationMs = performance.now() - started - metrics.humanWaitMs;
+        writeFileSync(
+          path.join(runDir, "metrics.json"),
+          JSON.stringify(metrics, null, 2),
+        );
+        this.storage.save(state);
       }
     });
   }
@@ -869,22 +1080,24 @@ export class Kitchen {
     const candidate = await sourceFingerprint(state.worktree, state.feature);
     const baseline = await sourceFingerprint(target, state.feature);
     try {
-      for (const check of contract.checks.filter(
+      const unitChecks = contract.checks.filter(
         (c) => config.profiles[c.profile]?.kind === "unit",
-      )) {
+      );
+      for (const check of unitChecks) {
         if (check.files.some((f) => !contract.unitTestFiles.includes(f)))
           throw new Error("Unit checks must execute accepted unit test files.");
-        const result = await executeCheck({
-          definition: check,
-          profile: config.profiles[check.profile]!,
+      }
+      record.checks.push(
+        ...(await executeChecks({
+          definitions: unitChecks,
+          profiles: config.profiles,
           root: target,
           runDir,
           fingerprint: candidate,
           green: false,
           signal: options.signal,
-        });
-        record.checks.push(result);
-      }
+        })),
+      );
       if (!record.checks.length) throw new Error("No unit test evidence.");
       if (
         (await sourceFingerprint(target, state.feature)) !== baseline ||
@@ -997,8 +1210,13 @@ export class Kitchen {
       return state;
     });
   }
-  private async renderReport(state: FeatureState): Promise<string> {
-    const fingerprint = await sourceFingerprint(state.worktree, state.feature);
+  private async renderReport(
+    state: FeatureState,
+    sourceSnapshot?: string,
+  ): Promise<string> {
+    const fingerprint =
+      sourceSnapshot ??
+      (await sourceFingerprint(state.worktree, state.feature));
     const ids = acceptanceIds(this.readDocument(state, "spec"));
     const lines = [
       `# Verification: ${state.feature}`,
@@ -1024,9 +1242,19 @@ export class Kitchen {
       "",
       "Expected RED establishes the tests-first checkpoint; it is never passing final evidence.",
       "",
-      "## LLM judgments",
-      "",
     );
+    lines.push(
+      "## Station timing",
+      "",
+      "| Station | Machine seconds | Human wait seconds | Prompt bytes |",
+      "|---|---:|---:|---:|",
+    );
+    for (const [station, record] of Object.entries(state.stations))
+      lines.push(
+        `| ${station} | ${record?.metrics?.durationMs === undefined ? "unavailable" : (record.metrics.durationMs / 1000).toFixed(2)} | ${record?.metrics ? (record.metrics.humanWaitMs / 1000).toFixed(2) : "unavailable"} | ${record?.metrics?.promptBytes.reduce((sum, prompt) => sum + prompt.total, 0) ?? "unavailable"} |`,
+      );
+    lines.push("");
+    lines.push("## LLM judgments", "");
     for (const [station, record] of Object.entries(state.stations)) {
       lines.push(`### ${station}`, "", record!.summary);
       for (const f of record!.findings)

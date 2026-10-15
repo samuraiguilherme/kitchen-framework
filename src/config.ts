@@ -87,9 +87,24 @@ export function loadConfig(root: string): Config {
   }
   for (const [name, value] of Object.entries(config.profiles))
     validateProfile(name, value);
+  if (
+    config.discovery !== undefined &&
+    (!config.discovery ||
+      typeof config.discovery !== "object" ||
+      (config.discovery.enabled !== undefined &&
+        typeof config.discovery.enabled !== "boolean"))
+  )
+    throw new Error("Discovery enabled must be a boolean.");
   return config;
 }
 function validateProfile(name: string, value: Profile): void {
+  if (
+    (value.parallelSafe !== undefined &&
+      typeof value.parallelSafe !== "boolean") ||
+    (value.resourceGroup !== undefined &&
+      (typeof value.resourceGroup !== "string" || !value.resourceGroup.trim()))
+  )
+    throw new Error(`Profile ${name} has invalid concurrency settings.`);
   if (
     !/^[a-z0-9-]+$/.test(name) ||
     !["unit", "integration", "browser", "command", "manual"].includes(

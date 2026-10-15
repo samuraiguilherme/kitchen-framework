@@ -27,7 +27,7 @@ export function validateFeature(feature: string): string {
     );
   return feature;
 }
-export function safePath(root: string, file: string): string {
+function absolutePath(root: string, file: string): string {
   const segments = file.replaceAll("\\", "/").split("/");
   if (
     !file ||
@@ -47,30 +47,66 @@ export function safePath(root: string, file: string): string {
     )
   )
     throw new Error(`Unsafe path: ${file}`);
-  const absolute = path.resolve(root, file);
+  return path.resolve(root, file);
+}
+function requireContained(anchor: string, resolved: string, file: string): void {
+  const relative = path.relative(anchor, resolved);
+  if (relative.startsWith("..") || path.isAbsolute(relative))
+    throw new Error(`Path escapes worktree: ${file}`);
+}
+export function safePath(root: string, file: string): string {
+  const absolute = absolutePath(root, file);
   const anchor = realpathSync(root);
   let parent = absolute;
   while (!existsSync(parent)) parent = path.dirname(parent);
-  const relative = path.relative(anchor, realpathSync(parent));
-  if (relative.startsWith("..") || path.isAbsolute(relative))
-    throw new Error(`Path escapes worktree: ${file}`);
+  requireContained(anchor, realpathSync(parent), file);
   if (existsSync(absolute) && lstatSync(absolute).isSymbolicLink())
     throw new Error(`Output cannot be a symlink: ${file}`);
   return absolute;
 }
+export function fileDigests(
+  root: string,
+  files: string[],
+): { entries: Array<[string, string | null]>; byteCount: number } {
+  const names = [...new Set(files)].sort();
+  if (!names.length) return { entries: [], byteCount: 0 };
+  // One scan owns its path cache. Later scans must resolve the directories again
+  // so source edits and retargeted directory symlinks cannot reuse old validation.
+  const absoluteRoot = path.resolve(root);
+  const anchor = realpathSync(root);
+  const parents = new Map([[absoluteRoot, anchor]]);
+  let byteCount = 0;
+  const entries = names.map((file): [string, string | null] => {
+    const absolute = absolutePath(root, file);
+    const exists = existsSync(absolute);
+    let parent = exists ? path.dirname(absolute) : absolute;
+    if (absolute === absoluteRoot) parent = absoluteRoot;
+    while (!parents.has(parent) && !existsSync(parent))
+      parent = path.dirname(parent);
+    let resolved = parents.get(parent);
+    if (resolved === undefined) {
+      resolved = realpathSync(parent);
+      parents.set(parent, resolved);
+    }
+    const canonical = exists
+      ? absolute === absoluteRoot
+        ? anchor
+        : path.join(resolved, path.basename(absolute))
+      : resolved;
+    requireContained(anchor, canonical, file);
+    if (exists && lstatSync(absolute).isSymbolicLink())
+      throw new Error(`Output cannot be a symlink: ${file}`);
+    // Read the canonical parent path we validated, rather than following a
+    // directory link again after resolving it (or its cached parent).
+    if (!exists) return [file, null];
+    const contents = readFileSync(canonical);
+    byteCount += contents.length;
+    return [file, hash(contents)];
+  });
+  return { entries, byteCount };
+}
 export function digest(root: string, files: string[]): string {
-  return hash(
-    JSON.stringify(
-      [...new Set(files)]
-        .sort()
-        .map((file) => [
-          file,
-          existsSync(safePath(root, file))
-            ? hash(readFileSync(safePath(root, file)))
-            : null,
-        ]),
-    ),
-  );
+  return hash(JSON.stringify(fileDigests(root, files).entries));
 }
 export function acceptanceIds(document: string): string[] {
   const ids = [...document.matchAll(/^\|\s*(AC-[0-9]+)\s*\|/gm)].map(
