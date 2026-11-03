@@ -89,6 +89,66 @@ afterEach(() => {
 });
 
 describe("live model readiness diagnostics", () => {
+  it("reports Claude configuration and setup when its default reviewer is disabled", async () => {
+    const before = loadConfig(root);
+    const results = await doctor(root);
+    expect(results.find(check => check.id === "claude-configuration")).toMatchObject({
+      required: false,
+      status: "unverified",
+      reason: expect.stringContaining("providers.review"),
+    });
+    for (const id of ["claude-cli", "claude-auth"])
+      expect(results.find(check => check.id === id)).toMatchObject({ required: false, status: "passed" });
+    expect(results.find(check => check.id === "claude-probe")).toMatchObject({
+      required: false, status: "unverified", reason: expect.stringContaining("no active role"),
+    });
+    expect(probes()).toHaveLength(1);
+    expect(probes().every(probe => probe.command === "codex")).toBe(true);
+    expect(loadConfig(root)).toEqual(before);
+  });
+
+  it("reports effective Claude configs from shared, local and station overrides", async () => {
+    config({ providers: { review: { provider: "claude", model: "shared-review" } } });
+    writeFileSync(path.join(root, "kitchen.config.local.json"), JSON.stringify({
+      providers: { review: { model: "local-review", executable: "local-claude" } },
+      stations: { spec: { author: { provider: "claude", model: "spec-author", executable: "station-claude" } } },
+    }));
+    const results = await doctor(root);
+    const configuration = results.find(check => check.id === "claude-configuration");
+    expect(configuration).toMatchObject({ required: true, status: "passed" });
+    for (const value of ["kitchen.config.json", "kitchen.config.local.json", "providers.review", "local-review", "local-claude", "stations.spec.author", "spec-author", "station-claude"])
+      expect(configuration?.reason).toContain(value);
+    expect(configuration?.reason).not.toContain("shared-review");
+    const auth = run.mock.calls.map(([request]) => request).filter(request => request.args.includes("auth"));
+    expect(auth.map(request => request.command)).toEqual(expect.arrayContaining(["local-claude", "station-claude"]));
+    expect(probes().some(probe => probe.command === "local-claude")).toBe(false);
+    expect(probes().some(probe => probe.command === "station-claude")).toBe(true);
+  });
+
+  it("keeps an unselected or unavailable Claude installation optional without model requests", async () => {
+    config({ providers: { author: { provider: "codex" }, review: { provider: "codex" } } });
+    run.mockImplementation(async request => request.command === "claude"
+      ? { ...success, code: 1, stderr: "not installed" } : fakeProcess(request));
+    const results = await doctor(root);
+    for (const id of ["claude-configuration", "claude-cli", "claude-auth", "claude-probe"])
+      expect(results.find(check => check.id === id)).toMatchObject({ required: false, status: "unverified" });
+    expect(probes().every(probe => probe.command !== "claude")).toBe(true);
+    expect(results.filter(check => check.required).every(check => check.status === "passed")).toBe(true);
+  });
+
+  it.each([false, true])("requires Claude authentication only for active roles (active=%s)", async active => {
+    config({ providers: { author: { provider: active ? "claude" : "codex" }, review: { provider: "claude" } } });
+    run.mockImplementation(async request => request.command === "claude" && request.args.includes("auth")
+      ? { ...success, stdout: '{"loggedIn":false}' } : fakeProcess(request));
+    const results = await doctor(root);
+    expect(results.find(check => check.id === "claude-auth")).toMatchObject({
+      required: active, status: active ? "failed" : "unverified", reason: expect.stringContaining("auth login"),
+    });
+    expect(probes().some(probe => probe.command === "claude")).toBe(false);
+    if (active)
+      expect(results.find(check => check.id === "claude-model-1")).toMatchObject({ required: true, status: "unverified" });
+  });
+
   it("probes each active response contract once without duplicating CLI/auth checks", async () => {
     config({ providers: { author: { provider: "claude" }, review: { provider: "claude" } }, discovery: { enabled: true }, stations: { spec: { reviewEnabled: true }, verify: { reviewEnabled: true } } });
     const results = await doctor(root);
@@ -219,7 +279,7 @@ describe("live model readiness diagnostics", () => {
       run.mock.calls.some(([request]) => request.args.includes("--profile")),
     ).toBe(false);
   });
-  it("checks a pinned local DSH runtime and schema probe without hosted login", async () => {
+  it("checks a pinned local DSH runtime and schema probe without requiring hosted login", async () => {
     const digest = `sha256:${"a".repeat(64)}`;
     config({
       providers: {
@@ -283,11 +343,9 @@ describe("live model readiness diagnostics", () => {
         status: "passed",
         reason: expect.stringContaining(digest),
       });
-      expect(
-        run.mock.calls.some(
-          ([o]) => o.args.includes("login") || o.args.includes("auth"),
-        ),
-      ).toBe(false);
+      expect(results.find(check => check.id === "claude-auth")).toMatchObject({ required: false });
+      expect(run.mock.calls.some(([request]) => request.args.includes("login"))).toBe(false);
+      expect(probes().some(request => request.args.includes("--json-schema"))).toBe(false);
       expect(progress.join(" ")).toContain("local Ollama request");
     } finally {
       fetchSpy.mockRestore();
@@ -345,7 +403,7 @@ describe("live model readiness diagnostics", () => {
     ).toBe(true);
     expect(loadConfig(root).providers.author.executable).toBe(missing);
   });
-  it("ignores disabled reviewers and the unused publish author", async () => {
+  it("checks disabled Claude setup without probing models or invoking the unused publish author", async () => {
     config({
       providers: {
         review: { provider: "claude", executable: "unused-reviewer" },
@@ -365,14 +423,10 @@ describe("live model readiness diagnostics", () => {
     });
     const results = await doctor(root);
     expect(probes()).toHaveLength(1);
-    expect(
-      run.mock.calls.every(
-        ([request]) => !request.command.startsWith("unused-"),
-      ),
-    ).toBe(true);
-    expect(results.some((result) => result.id.startsWith("claude-"))).toBe(
-      false,
-    );
+    for (const executable of ["unused-reviewer", "unused-spec-reviewer", "unused-plan-reviewer"])
+      expect(results.find(check => check.reason?.startsWith(`${executable}:`))).toMatchObject({ required: false });
+    expect(run.mock.calls.some(([request]) => request.command === "unused-publish-author")).toBe(false);
+    expect(results.find(check => check.id === "claude-configuration")?.reason).toContain("stations.publish.author (inactive");
   });
   it.each(stationOrder)(
     "probes an opted-in %s reviewer without requiring the unused default",
@@ -394,11 +448,8 @@ describe("live model readiness diagnostics", () => {
       expect(
         results.find((result) => result.id === "claude-model-2")?.reason,
       ).toContain(`stations.${station}.review`);
-      expect(
-        run.mock.calls.some(
-          ([request]) => request.command === "unused-reviewer",
-        ),
-      ).toBe(false);
+      expect(results.find(check => check.reason?.startsWith("unused-reviewer:"))).toMatchObject({ required: false });
+      expect(probes().some(request => request.command === "unused-reviewer")).toBe(false);
     },
   );
   it("probes and identifies distinct Windows sandbox selections", async () => {
@@ -507,7 +558,7 @@ describe("live model readiness diagnostics", () => {
     ).toBe(true);
     expect(
       results.some((result) =>
-        result.reason?.includes("stations.intent.review"),
+        result.id.includes("-model-") && result.reason?.includes("stations.intent.review"),
       ),
     ).toBe(false);
   });

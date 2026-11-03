@@ -76,6 +76,43 @@ export async function doctor(
       config.stations.plan?.author ? "stations.plan.author" : "providers.author",
       "discovery",
     );
+  const claudeRoles: Array<{
+    config: RoleConfig;
+    label: string;
+    active: boolean;
+  }> = [];
+  const addClaudeRole = (role: RoleConfig | undefined, label: string) => {
+    if (role?.provider === "claude")
+      claudeRoles.push({
+        config: role,
+        label,
+        active: pairs.some(pair => pair.roles.includes(label)),
+      });
+  };
+  for (const role of ["author", "review"] as const) {
+    addClaudeRole(config.providers[role], `providers.${role}`);
+    for (const station of stationOrder)
+      addClaudeRole(config.stations[station]?.[role], `stations.${station}.${role}`);
+  }
+  const claudeRequired = claudeRoles.some(role => role.active);
+  const configSources = ["kitchen.config.json", "kitchen.config.local.json"]
+    .map(file => path.join(root, file))
+    .filter(file => existsSync(file));
+  const claudeConfiguration = claudeRoles.map(role =>
+    `${role.label} (${role.active ? "active" : "inactive"}; model=${role.config.model ?? "CLI default (inherited)"}; executable=${resolveProviderExecutable("claude", role.config.executable)})`,
+  );
+  results.push({
+    id: "claude-configuration",
+    required: claudeRequired,
+    status: claudeRequired ? "passed" : "unverified",
+    reason: [
+      `Project ${root}; configuration=${configSources.join(", ") || "built-in defaults"}; default author=${config.providers.author.provider}`,
+      ...claudeConfiguration,
+      ...(claudeRequired ? [] : [
+        "No active role uses Claude. Setup diagnostics are optional; select providers.author.provider=claude or enable a Claude reviewer to verify its model.",
+      ]),
+    ].join("; "),
+  });
   const packageFile = path.join(root, "package.json");
   const localPairs = pairs.filter(
     (pair) => pair.config.provider === "deepseek",
@@ -150,14 +187,14 @@ export async function doctor(
     prefix: string;
     version?: string;
   }> = [];
-  for (const pair of pairs) {
-    const provider = pair.config.provider;
-    const command = resolveProviderExecutable(provider, pair.config.executable);
+  const addExecutable = (role: RoleConfig, required: boolean) => {
+    const provider = role.provider;
+    const command = resolveProviderExecutable(provider, role.executable);
     let entry = executables.find(
       (e) =>
         e.provider === provider &&
         e.command === command &&
-        e.version === pair.config.dsh?.version,
+        e.version === role.dsh?.version,
     );
     if (!entry) {
       const count = executables.filter((e) => e.provider === provider).length;
@@ -167,7 +204,7 @@ export async function doctor(
         prefix:
           (provider === "deepseek" ? "dsh" : provider) +
           (count ? `-${count + 1}` : ""),
-        version: pair.config.dsh?.version,
+        version: role.dsh?.version,
       };
       executables.push(entry);
       checks.push({
@@ -175,9 +212,9 @@ export async function doctor(
         command,
         args:
           provider === "deepseek"
-            ? deepseekVersionArgs(pair.config)
+            ? deepseekVersionArgs(role)
             : ["--version"],
-        required: true,
+        required,
       });
       if (provider !== "deepseek")
         checks.push({
@@ -187,14 +224,31 @@ export async function doctor(
             provider === "codex"
               ? ["login", "status"]
               : ["auth", "status", "--json"],
-          required: true,
+          required,
         });
     }
+    return entry;
+  };
+  // Active roles register first so shared CLI/auth checks remain required.
+  for (const pair of pairs) {
+    const entry = addExecutable(pair.config, true);
     pair.prerequisites = [
       `${entry.prefix}-cli`,
-      ...(provider === "deepseek" ? [] : [`${entry.prefix}-auth`]),
+      ...(pair.config.provider === "deepseek" ? [] : [`${entry.prefix}-auth`]),
     ];
   }
+  const claudeSetupRoles = claudeRoles.filter(role => role.label !== "stations.publish.author");
+  for (const role of claudeSetupRoles.length
+    ? claudeSetupRoles.map(role => role.config)
+    : [{ provider: "claude" } as const])
+    addExecutable(role, false);
+  if (!claudeRequired)
+    results.push({
+      id: "claude-probe",
+      required: false,
+      status: "unverified",
+      reason: "Generation not run: no active role uses Claude. Select providers.author.provider=claude or enable a Claude reviewer, then rerun doctor to verify its configured model and response contract.",
+    });
   if (!localRequired) {
     const role = localRoles[0]!;
     const command = resolveProviderExecutable("deepseek");
@@ -259,9 +313,13 @@ export async function doctor(
       }
       if (/^claude(?:-\d+)?-auth$/.test(check.id) && result.code === 0) {
         try {
-          if (!JSON.parse(result.stdout).loggedIn) {
-            status = "failed";
-            reason = "Claude is not logged in.";
+          const loggedIn = JSON.parse(result.stdout).loggedIn;
+          if (loggedIn === false) {
+            status = check.required ? "failed" : "unverified";
+            reason = "Claude is not logged in. Authenticate the selected CLI with auth login.";
+          } else if (loggedIn !== true) {
+            status = "unverified";
+            reason = "Unknown Claude auth response.";
           }
         } catch {
           status = "unverified";

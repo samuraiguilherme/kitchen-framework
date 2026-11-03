@@ -165,11 +165,23 @@ describe("standalone CLI", () => {
           : "#!/bin/sh\nexit 1\n",
         { mode: 0o755 },
       );
+      const claudeScript = path.join(fixtureBin, "claude.mjs");
+      const claudeLog = path.join(fixtureBin, "claude-calls.jsonl");
+      writeFileSync(claudeScript, [
+        "import fs from 'node:fs';",
+        `fs.appendFileSync(${JSON.stringify(claudeLog)},JSON.stringify(process.argv.slice(2))+'\\n');`,
+        "console.log(process.argv.includes('auth') ? JSON.stringify({loggedIn:true}) : 'Claude fixture');",
+      ].join("\n"));
+      const claudeLauncher = path.join(fixtureBin, process.platform === "win32" ? "fake-claude.cmd" : "fake-claude");
+      writeFileSync(claudeLauncher, process.platform === "win32"
+        ? `@echo off\r\n"${process.execPath}" "${claudeScript}" %*\r\n`
+        : `#!/bin/sh\nexec "${process.execPath}" "${claudeScript}" "$@"\n`, { mode: 0o755 });
       writeFileSync(
         path.join(root, "kitchen.config.json"),
         JSON.stringify({
           base: "main",
           providers: {
+            review: { provider: "claude", model: "configured-claude-review", executable: claudeLauncher },
             author: {
               provider: "deepseek",
               executable: launcher,
@@ -192,7 +204,7 @@ describe("standalone CLI", () => {
         timeoutMs: 15000,
         env: { PATH: fixtureBin + path.delimiter + process.env.PATH },
       });
-      expect(result.code, result.stderr).toBe(0);
+      expect(result.code, [result.stderr, result.stdout].join("\n")).toBe(0);
       const checks = JSON.parse(result.stdout) as Array<{
         id: string;
         status: string;
@@ -214,12 +226,15 @@ describe("standalone CLI", () => {
       expect(
         checks.find((check) => check.id === "deepseek-local")?.reason,
       ).toContain("pin=matched");
-      expect(
-        checks.some(
-          (check) =>
-            check.id.startsWith("codex-") || check.id.startsWith("claude-"),
-        ),
-      ).toBe(false);
+      expect(checks.some(check => check.id.startsWith("codex-"))).toBe(false);
+      expect(checks.find(check => check.id === "claude-configuration")).toMatchObject({
+        required: false, status: "unverified", reason: expect.stringContaining("configured-claude-review"),
+      });
+      for (const id of ["claude-cli", "claude-auth"])
+        expect(checks.find(check => check.id === id)).toMatchObject({ required: false, status: "passed" });
+      const claudeCalls = readFileSync(claudeLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
+      expect(claudeCalls).toEqual(expect.arrayContaining([["--version"], ["auth", "status", "--json"]]));
+      expect(claudeCalls).toHaveLength(2);
     } finally {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));

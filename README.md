@@ -56,9 +56,19 @@ kitchen approve completion-notifications intent --actor your-name --minutes 5
 
 Authenticate the CLIs separately when doctor reports missing login: `codex login` and `claude auth login`. Doctor does not change accounts or log you in. GitHub is optional until publication. An explicit intended `github.account` in root `kitchen.config.json` is mandatory before pushing; the runner never selects an account for you.
 
+Doctor always includes `claude-configuration`, showing the shared/local config
+sources and effective Claude roles, models, executables and active status.
+Configured Claude executables receive CLI and authentication checks even when
+their roles are inactive. If Claude is not configured, doctor checks the default
+`claude` installation. These setup checks are optional until an active role uses
+that executable; they do not select Claude or enable review. An unused publish
+author is listed as inactive without invoking its executable. When no active
+role uses Claude, `claude-probe` explains why no model request was made and how
+to select a Claude author or reviewer.
+
 Doctor always includes DeepSeek setup diagnostics: `deepseek-configuration`, `dsh-cli`, `deepseek-node`, `ollama-server`, and `deepseek-local`. These checks are optional until an active author or enabled reviewer selects DeepSeek. They show the project root, pinned DSH runtime, local endpoint, installed DeepSeek models, digest pin, and configured context/output limits. An unselected provider gets a `deepseek-probe` explanation and setup command; doctor does not select it, download packages/models, or generate with it.
 
-For active providers, doctor checks the CLI executable and authentication where applicable, then makes a small structured request for every distinct provider/model/executable/configuration and response contract combination, including station overrides. Author, review and enabled discovery contracts are probed separately; version/authentication checks are shared. Disabled reviewers and the unused publish author are ignored. Hosted requests consume quota and have a maximum 60-second timeout; local DeepSeek probes allow up to 180 seconds, bounded by the configured timeout. Missing DSH, an unavailable Ollama server, missing models or digest mismatches are reported separately and prevent a configured DeepSeek probe. Required failures or skipped probes cause a nonzero exit. Ctrl+C cancels the checks.
+For active providers, doctor checks the CLI executable and authentication where applicable, then makes a small structured request for every distinct provider/model/executable/configuration and response contract combination, including station overrides. Author, review and enabled discovery contracts are probed separately; version/authentication checks are shared. Model probes skip disabled reviewers and the unused publish author. Hosted requests consume quota and have a maximum 60-second timeout; local DeepSeek probes allow up to 180 seconds, bounded by the configured timeout. Missing DSH, an unavailable Ollama server, missing models or digest mismatches are reported separately and prevent a configured DeepSeek probe. Required failures or skipped probes cause a nonzero exit. Ctrl+C cancels the checks.
 
 Model checks identify the configured model and roles. When `model` is omitted, they say `CLI default (inherited)` and test that choice without adding an override. Probes run in separate scratch directories without the feature request or repository instructions. Raw evidence is retained under `.kitchen/doctor/<run-id>/`. Doctor does not rerun a feature station.
 
