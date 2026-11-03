@@ -7,11 +7,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Kitchen } from "../src/kitchen.ts";
 import { stationOrder } from "../src/domain.ts";
-import type { Config, PrInput } from "../src/types.ts";
+import type { Config, PrInput, RoleConfig } from "../src/types.ts";
 
 const documents: Record<string, string> = {
   intent:
@@ -33,6 +34,28 @@ const checks = [
 ];
 
 describe("station latency safeguards", () => {
+  it("uses opt-in compact prompts and makes token-policy changes stale the candidate", async () => {
+    const setup = fixture();
+    const server = createServer((_request, response) => response.end(JSON.stringify({ models: [{ name: "local", digest: "a".repeat(64) }] })));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing fixture address");
+    try {
+    const configFile = path.join(setup.root, "kitchen.config.local.json");
+    const author = { provider: "deepseek", model: "local", dsh: { version: "0.2.2-alpha.3", baseURL: `http://127.0.0.1:${address.port}/v1`, contextWindow: 8192, maxTokens: 2048, tokenPolicy: { version: 1, maxSteps: 4 } } };
+    writeFileSync(configFile, JSON.stringify({ providers: { author } }));
+    await setup.kitchen.start("answer", { request: "Return 42." });
+    await setup.kitchen.run("answer", "intent");
+    expect(setup.calls[0]!.prompt).not.toContain("- reviewer:");
+    await setup.kitchen.approve("answer", "intent", { actor: "chef" });
+    author.dsh.tokenPolicy.maxSteps = 5;
+    writeFileSync(configFile, JSON.stringify({ providers: { author } }));
+    expect((await setup.kitchen.status("answer")).stations.intent?.status).toBe("stale");
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
   it("records preparation before provider progress and excludes interactive waiting from machine time", async () => {
     const setup = fixture();
     let authors = 0;
@@ -226,11 +249,12 @@ process.exitCode=passed?0:1;`,
   git(root, "init", "--bare", remote);
   git(root, "remote", "add", "origin", remote);
   git(root, "push", "origin", baseBranch);
-  const calls: Array<{ station: string; role: string; prompt: string }> = [];
+  const calls: Array<{ station: string; role: string; prompt: string; config?: RoleConfig }> = [];
   const provider = async (request: {
     station: string;
     role: string;
     prompt: string;
+    config?: RoleConfig;
   }) => {
     calls.push(request);
     if (request.role === "review")
@@ -813,6 +837,25 @@ describe("station workflow", () => {
       "stale",
     );
   });
+  it("invalidates approvals when switching between Claude and Codex authors", async () => {
+    const setup = fixture();
+    const file = path.join(setup.root, "kitchen.config.local.json");
+    writeFileSync(file, JSON.stringify({ providers: { author: { provider: "claude" } } }));
+    await setup.kitchen.start("answer", { request: "Return 42." });
+    await setup.kitchen.run("answer", "intent");
+    await setup.kitchen.approve("answer", "intent", { actor: "chef" });
+    expect(setup.calls[0]?.config?.provider).toBe("claude");
+    writeFileSync(file, JSON.stringify({ providers: { author: { provider: "codex" } } }));
+    expect((await setup.kitchen.status("answer")).stations.intent?.status).toBe("stale");
+  });
+  it("uses an explicit station author instead of the global Claude role", async () => {
+    const setup = fixture(0, { spec: { author: { provider: "codex", model: "spec-author" } } });
+    writeFileSync(path.join(setup.root, "kitchen.config.local.json"), JSON.stringify({ providers: { author: { provider: "claude", model: "primary" } } }));
+    await acceptDocs(setup.kitchen);
+    expect(setup.calls.filter(call => call.role === "author").map(call => [call.station, call.config?.provider])).toEqual([
+      ["intent", "claude"], ["spec", "codex"], ["plan", "claude"], ["test-plan", "claude"],
+    ]);
+  });
   it("blocks approval on opted-in intent review findings", async () => {
     const setup = fixture(0, { intent: { reviewEnabled: true } });
     const kitchen = new Kitchen({
@@ -893,6 +936,7 @@ describe("station workflow", () => {
   );
   it("resumes saved questions before calling the author and keeps partial answers", async () => {
     const setup = fixture();
+    writeFileSync(path.join(setup.root, "kitchen.config.local.json"), JSON.stringify({ providers: { author: { provider: "claude" } } }));
     const questions = [
       { id: "audience", text: "Who needs the answer?" },
       { id: "outcome", text: "What outcome do they need?" },
@@ -1149,9 +1193,9 @@ describe("station workflow", () => {
       "awaiting-approval",
     );
   });
-  it.each([[undefined, "develop"], [false, "main"], [true, "release/next"]] as const)(
-    "requires GREEN and human approval with reviewEnabled=%s on %s",
-    async (reviewEnabled, baseBranch) => {
+  it.each([[undefined, "develop", "codex"], [false, "main", "claude"], [true, "release/next", "claude"]] as const)(
+    "requires GREEN and human approval with reviewEnabled=%s on %s using %s author",
+    async (reviewEnabled, baseBranch, author) => {
       const setup = fixture(
         0,
         Object.fromEntries(
@@ -1159,12 +1203,13 @@ describe("station workflow", () => {
             station,
             {
               reviewEnabled,
-              review: { provider: "claude", model: "station-review" },
+              review: { provider: author === "claude" ? "codex" : "claude", model: "station-review" },
             },
           ]),
         ),
         baseBranch,
       );
+      writeFileSync(path.join(setup.root, "kitchen.config.local.json"), JSON.stringify({ providers: { author: { provider: author, model: "primary-author" } } }));
       await acceptDocs(setup.kitchen);
       for (const station of [
         "unit-tests",
@@ -1187,6 +1232,10 @@ describe("station workflow", () => {
           ...(station === "publish" ? [] : ["author"]),
           ...(reviewEnabled ? ["review"] : []),
         ]);
+        if (station !== "publish")
+          expect(calls[0]?.config).toEqual({ provider: author, model: "primary-author" });
+        if (reviewEnabled)
+          expect(calls.at(-1)?.config).toEqual({ provider: author === "claude" ? "codex" : "claude", model: "station-review" });
         if (station !== "publish")
           expect(calls[0]?.prompt).toContain(
             reviewEnabled

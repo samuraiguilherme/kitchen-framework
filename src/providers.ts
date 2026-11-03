@@ -1,16 +1,20 @@
 import { Ajv } from "ajv";
 import {
+  createReadStream,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmdirSync,
   writeFileSync,
 } from "node:fs";
+import { createInterface } from "node:readline";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runProcess } from "./process.ts";
 import type { ProcessResult } from "./process.ts";
 import { providerProgress } from "./provider-progress.ts";
+import { promptSections } from "./metrics.ts";
+import { summarizeTokenEvents } from "./token-budget.ts";
 import { resolveProviderExecutable } from "./provider-executable.ts";
 import {
   checkDeepSeekModel,
@@ -349,6 +353,37 @@ async function invokeProvider(
     clearInterval(heartbeat);
   }
   const metrics = progress.metrics();
+  if (deepseek) {
+    const events: Array<Record<string, unknown>> = [];
+    try {
+      const lines = createInterface({
+        input: createReadStream(deepseek.measurementFile), crlfDelay: Infinity,
+      });
+      for await (const line of lines) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line);
+        // Full projections remain on disk; aggregate only their measurements.
+        delete event.request;
+        events.push(event);
+      }
+    } catch {
+      events.push({
+        type: "failure", incompleteUsage: true,
+        message: "Incomplete DSH token evidence; inspect raw token events.",
+      });
+    }
+    metrics.tokens = {
+      ...summarizeTokenEvents(events),
+      kitchenPromptBytes: Buffer.byteLength(request.prompt),
+      adapterInputBytes: Buffer.byteLength(input),
+      adapterSections: promptSections(input),
+    };
+    if (!metrics.tokens.usageComplete) delete metrics.usage;
+    if (metrics.tokens.failure)
+      result = { ...result, code: -1, failureReason: metrics.tokens.failure };
+    for (const warning of new Set(metrics.tokens.warnings))
+      progress.report(warning);
+  }
   const processEvidence = {
     ...result,
     provider: request.config.provider,
@@ -366,6 +401,8 @@ async function invokeProvider(
             ...modelIdentity,
             overlayFile: deepseek.overlayFile,
             overlayHash: deepseek.overlayHash,
+            effectiveMaxTokens: deepseek.maxTokens,
+            measurementFile: deepseek.measurementFile,
           },
         }
       : {}),
@@ -429,32 +466,43 @@ export const cliProvider: Provider = async (request) => {
 // Existing integrations can retain this name while migrating to local providers.
 export const hostedProvider = cliProvider;
 
+export type ProbeContract = "author" | "review" | "discovery";
+
 export async function probeProvider(
   config: RoleConfig,
   runDir: string,
   timeoutMs: number,
   signal?: AbortSignal,
+  contract: ProbeContract = "review",
 ): Promise<void> {
   // A child directory inside the repository still inherits its AGENTS/CLAUDE files.
   const cwd = mkdtempSync(path.join(tmpdir(), "kitchen-model-probe-"));
+  const summary = "Kitchen model probe OK";
+  const expected =
+    contract === "author"
+      ? {
+          summary, questions: [], document: null, files: [], allowedPaths: [],
+          unitTestFiles: [], scaffoldFiles: [], checks: [],
+        }
+      : contract === "discovery"
+        ? { summary, evidence: [], unresolved: [] }
+        : { summary, findings: [] };
   try {
-    const output = validateReviewOutput(
-      await invokeProvider(
-        {
-          station: "intent",
-          role: "review",
-          config,
-          cwd,
-          runDir,
-          timeoutMs,
-          signal,
-          prompt:
-            'This is a model availability check. Do not use tools or read files. Return only the JSON object {"summary":"Kitchen model probe OK","findings":[]}.',
-        },
-        true,
-      ),
-    );
-    if (output.summary !== "Kitchen model probe OK" || output.findings.length)
+    const output = await invokeProvider(
+      {
+        station: contract === "discovery" ? "plan" : "intent",
+        role: contract === "review" ? "review" : "author",
+        ...(contract === "discovery" ? { kind: "discovery" as const } : {}),
+        config, cwd, runDir, timeoutMs, signal,
+        prompt: `This is a model availability check. Do not use tools or read files. Return only the JSON object ${JSON.stringify(expected)}.`,
+      },
+      true,
+    ) as Record<string, unknown>;
+    if (
+      Object.entries(expected).some(
+        ([key, value]) => JSON.stringify(output[key]) !== JSON.stringify(value),
+      )
+    )
       throw new Error(
         "Unexpected model probe response; structured request not verified.",
       );

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -19,6 +19,48 @@ function fixture(separate = false) {
 }
 
 describe("project initialization", () => {
+  it("selects Claude author and Codex reviewer without enabling review", async () => {
+    const { root } = fixture();
+    const result = await initializeProject(root, { author: "claude", review: "codex" });
+    expect(result).toMatchObject({ author: "claude", review: "codex" });
+    const file = path.join(root, "kitchen.config.json");
+    const original = readFileSync(file, "utf8");
+    expect(JSON.parse(original)).toMatchObject({
+      providers: { author: { provider: "claude" }, review: { provider: "codex" } },
+      stations: {},
+    });
+    expect((await initializeProject(root, { author: "claude", review: "codex" })).created).toEqual([]);
+    expect(readFileSync(file, "utf8")).toBe(original);
+  });
+
+  it.each(["author", "review"] as const)("rejects invalid %s selection before writing", async (role) => {
+    const { root } = fixture();
+    await expect(initializeProject(root, { [role]: "deepseek" })).rejects.toThrow(/codex.*claude/);
+    expect(existsSync(path.join(root, "kitchen.config.json"))).toBe(false);
+    expect(existsSync(path.join(root, "docs"))).toBe(false);
+    expect(existsSync(path.join(root, ".gitignore"))).toBe(false);
+  });
+
+  it("checks effective local roles before any initialization writes", async () => {
+    const { root } = fixture();
+    writeFileSync(path.join(root, "kitchen.config.local.json"), JSON.stringify({ providers: { author: { provider: "codex" } } }));
+    await expect(initializeProject(root, { author: "claude" })).rejects.toThrow(/providers.author/);
+    expect(existsSync(path.join(root, "kitchen.config.json"))).toBe(false);
+    expect(existsSync(path.join(root, "docs"))).toBe(false);
+    const result = await initializeProject(root, { author: "codex" });
+    expect(result).toMatchObject({ author: "codex", review: "claude" });
+    const shared = readFileSync(path.join(root, "kitchen.config.json"), "utf8");
+    await expect(initializeProject(root, { review: "codex" })).rejects.toThrow(/providers.review/);
+    expect(readFileSync(path.join(root, "kitchen.config.json"), "utf8")).toBe(shared);
+  });
+
+  it("validates local provider-specific fields against the selected new author before writing", async () => {
+    const { root } = fixture();
+    writeFileSync(path.join(root, "kitchen.config.local.json"), JSON.stringify({ providers: { author: { windowsSandbox: "unelevated" } } }));
+    await expect(initializeProject(root, { author: "claude" })).rejects.toThrow(/provider configuration/);
+    expect(existsSync(path.join(root, "kitchen.config.json"))).toBe(false);
+  });
+
   it("uses the current local branch without a remote or package.json", async () => {
     const { root } = fixture();
     expect(await initializeProject(root)).toMatchObject({ base: "trunk" });

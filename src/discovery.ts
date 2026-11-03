@@ -4,6 +4,7 @@ import { hash, safePath } from "./domain.ts";
 import { targetPaths } from "./context.ts";
 import { instructions } from "./prompts.ts";
 import { validateDiscoveryOutput } from "./providers.ts";
+import { tokenPromptVersion } from "./token-budget.ts";
 import type {
   Config,
   DiscoveryResult,
@@ -27,6 +28,7 @@ const tasks = [
 export const discoveryPolicy = (config: Config) =>
   hash(
     JSON.stringify({
+      tokenPromptVersion,
       profiles: config.profiles,
       author: config.stations.plan?.author ?? config.providers.author,
       enabled: config.discovery?.enabled === true,
@@ -66,13 +68,14 @@ export async function discover(options: {
   signal?: AbortSignal;
   onProgress?: ProviderRequest["onProgress"];
   onMetrics?: ProviderRequest["onMetrics"];
+  onCache?: (hit: boolean) => void;
 }): Promise<DiscoveryResult[]> {
   const { root, state, config } = options;
   if (options.signal?.aborted) throw new Error("Discovery cancelled.");
   const context = instructions(state.worktree, targetPaths(state));
   const key = hash(
     JSON.stringify({
-      version: 1,
+      version: 2,
       code: options.codeFingerprint,
       targets: targetPaths(state),
       request: state.request,
@@ -105,6 +108,7 @@ export async function discover(options: {
         options.onProgress?.(
           "Discovery: using source-verified cached findings.",
         );
+        options.onCache?.(true);
         return results;
       }
     } catch {
@@ -114,6 +118,7 @@ export async function discover(options: {
   const local =
     (config.stations.plan?.author ?? config.providers.author).provider ===
     "deepseek";
+  options.onCache?.(false);
   options.onProgress?.(
     `Discovery: tracing implementation and verification ${local ? "sequentially (local model)" : "concurrently (two read-only agents)"}.`,
   );

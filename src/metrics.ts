@@ -31,7 +31,7 @@ export function promptSections(prompt: string): Record<string, number> {
   let name = "instructions";
   for (const line of prompt.split(/(?<=\n)/)) {
     const heading =
-      /^(Human\/model conversation|Rubric|Station boundaries|Existing template|Context|Human revision request|DOCUMENT [^\n]+|CHECK PROFILES|LOCAL RUN STATE|RUNNER PREPARATION|DISCOVERY|DIFF|UNTRACKED FILES)/.exec(
+      /^(Human\/model conversation|Rubric|Station boundaries|Existing template|Context|Human revision request|KITCHEN OUTPUT CONTRACT|DOCUMENT [^\n]+|CHECK PROFILES|LOCAL RUN STATE|RUNNER PREPARATION|DISCOVERY|DIFF|UNTRACKED FILES)/.exec(
         line,
       );
     if (heading) name = heading[1]!;

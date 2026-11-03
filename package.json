@@ -15,6 +15,7 @@
     "templates",
     "kitchen.config.example.json",
     "kitchen.config.deepseek.example.json",
+    "kitchen.config.claude.example.json",
     "docs/local-deepseek.md",
     "scripts/setup-deepseek.ps1"
   ],

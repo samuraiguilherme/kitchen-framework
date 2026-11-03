@@ -22,6 +22,21 @@ kitchen init
 kitchen --cwd C:/work/my-project init --base origin/main
 ```
 
+To use Claude as the primary author throughout the flow, select the roles when
+initializing a new project:
+
+```powershell
+kitchen init --author claude --review codex
+```
+
+`--author` and `--review` accept `codex` or `claude` and apply only to `init`.
+Omitting them preserves the Codex author and Claude reviewer defaults. Selecting
+only `--author claude` retains Claude as the configured reviewer; use the explicit
+pair above for cross-provider review. Selecting a reviewer does not enable it:
+review remains opt-in through each station's `reviewEnabled` setting. Repeated
+initialization preserves configuration; conflicting role flags explain which
+shared or local configuration field to edit before making any initialization writes.
+
 `init` creates `kitchen.config.json`, copies the four document templates into `docs/_templates/`, and adds `.kitchen/` and `kitchen.config.local.json` to `.gitignore`. Existing config and templates are preserved; repeated initialization is safe. It does not fetch, commit, install project dependencies, or call providers. Review and commit the generated shared configuration and templates yourself.
 
 The base is detected from the local `origin/HEAD`, then existing `origin/main`, `origin/master` or `origin/develop`, then the current local branch or a local default branch. Use `--base <branch>` to choose explicitly, such as `origin/release/next` or local `main` for an offline project. The ref must already resolve to a commit. Edit `base` in an existing config to change it; older configs that omit it retain `origin/develop` as their default.
@@ -41,7 +56,9 @@ kitchen approve completion-notifications intent --actor your-name --minutes 5
 
 Authenticate the CLIs separately when doctor reports missing login: `codex login` and `claude auth login`. Doctor does not change accounts or log you in. GitHub is optional until publication. An explicit intended `github.account` in root `kitchen.config.json` is mandatory before pushing; the runner never selects an account for you.
 
-Doctor checks the CLI executables and logins used by station authors and enabled reviewers, then makes a small structured hosted request for every distinct provider/model/executable/Windows-sandbox combination, including station overrides. Disabled reviewer settings and the unused publish author are ignored. These requests consume model quota. Each has a maximum 60-second timeout (or the smaller configured provider timeout); Ctrl+C cancels them. A login alone does not establish model access. Rejected models, quota/network errors, timeouts, and invalid responses fail readiness; skipped requests remain unverified and also cause a nonzero exit.
+Doctor always includes DeepSeek setup diagnostics: `deepseek-configuration`, `dsh-cli`, `deepseek-node`, `ollama-server`, and `deepseek-local`. These checks are optional until an active author or enabled reviewer selects DeepSeek. They show the project root, pinned DSH runtime, local endpoint, installed DeepSeek models, digest pin, and configured context/output limits. An unselected provider gets a `deepseek-probe` explanation and setup command; doctor does not select it, download packages/models, or generate with it.
+
+For active providers, doctor checks the CLI executable and authentication where applicable, then makes a small structured request for every distinct provider/model/executable/configuration and response contract combination, including station overrides. Author, review and enabled discovery contracts are probed separately; version/authentication checks are shared. Disabled reviewers and the unused publish author are ignored. Hosted requests consume quota and have a maximum 60-second timeout; local DeepSeek probes allow up to 180 seconds, bounded by the configured timeout. Missing DSH, an unavailable Ollama server, missing models or digest mismatches are reported separately and prevent a configured DeepSeek probe. Required failures or skipped probes cause a nonzero exit. Ctrl+C cancels the checks.
 
 Model checks identify the configured model and roles. When `model` is omitted, they say `CLI default (inherited)` and test that choice without adding an override. Probes run in separate scratch directories without the feature request or repository instructions. Raw evidence is retained under `.kitchen/doctor/<run-id>/`. Doctor does not rerun a feature station.
 
@@ -148,6 +165,54 @@ station clears the current preparation registration while retaining its artifact
 Implementation proposals that rewrite approved unit tests are rejected before any proposed file is written. To revise accepted tests, return to `unit-tests` with `--feedback "AC-2: <requirement-based reason>"`, run any enabled independent review and accept again. Revised tests run at the original base; the original checkpoint stays recorded and revision commits are listed separately. Implementation and verification must run again.
 
 ## Configure providers and package checks
+
+Claude can author every execution station, including unit tests, implementation
+and verification. For an existing project, merge the following into
+`kitchen.config.json` or the ignored `kitchen.config.local.json`:
+
+```json
+{
+  "providers": {
+    "author": { "provider": "claude" },
+    "review": { "provider": "codex" }
+  }
+}
+```
+
+The complete [Claude configuration example](kitchen.config.claude.example.json)
+includes check profiles to adapt to your project. Omit models to inherit CLI
+defaults, or configure each role's model independently. Inspect
+`stations.<station>.author` overrides as well: they replace the global role for
+that station. Changing providers in a local role replaces the previous role's
+model, executable and provider-specific settings; include the desired new values.
+Run `kitchen doctor`, then rerun affected stations and renew their approvals.
+Doctor probes response shapes without tools; it does not establish repository
+read readiness. Claude retains read-only tools and returns complete proposals;
+Kitchen owns writes, checks, approvals and publication. Publish uses the runner's
+preview and an optional reviewer, with no author call.
+
+For an explicit live qualification from this development checkout:
+
+```powershell
+node --import tsx scripts/smoke-claude.ts --init
+# Use the printed directory for each subsequent invocation:
+node --import tsx scripts/smoke-claude.ts --live --directory <fixture-directory>
+```
+
+Initialization creates a disposable Git project under
+`.kitchen/validation/claude-primary/` without provider calls. Live mode consumes
+model quota, runs role-aware doctor probes and a repository read proof, and
+executes one station at a time. It prints normal commands for human answers and
+approvals; rerun the harness after each checkpoint. Use `--feedback-file` to
+answer pending questions through the harness. Optional `--model`,
+`--author-executable` and `--review-executable` apply during `--init`. Edit the
+fixture's machine-local role settings for Codex Windows sandbox selection when
+needed. The fixture uses real assertions for baseline RED and final GREEN,
+enables discovery and Codex review at verify/publish, retains all attempts and
+raw provider evidence, and ends at the approved publish preview. `report.json`
+distinguishes a completed qualification from a pending or failed run. Restore
+previous complete role objects and renew affected approvals to roll back a
+project's author selection.
 
 DeepSeek Harness with a local Ollama model is available as an opt-in provider.
 See [local DeepSeek setup](docs/local-deepseek.md) for the pinned CLI, model alias,

@@ -17,6 +17,13 @@ function fixture(shared: unknown, local?: unknown) {
 }
 
 describe("machine-local Kitchen configuration", () => {
+  it("switches global and station authors to Claude without inheriting Codex settings", () => {
+    const previous = { provider: "codex", model: "codex-model", executable: "old-codex.exe", windowsSandbox: "unelevated" };
+    const root = fixture({ providers: { author: previous }, stations: { spec: { author: previous } } }, { providers: { author: { provider: "claude", model: "claude-model" } }, stations: { spec: { author: { provider: "claude" } }, plan: { author: { model: "plan-model" } } } });
+    expect(loadConfig(root).providers.author).toEqual({ provider: "claude", model: "claude-model" });
+    expect(loadConfig(root).stations.spec?.author).toEqual({ provider: "claude" });
+    expect(loadConfig(root).stations.plan?.author).toEqual({ provider: "claude", model: "plan-model" });
+  });
   it.each([null, false, 0, []])(
     "rejects an invalid role override %j",
     (author) => {
@@ -35,6 +42,11 @@ describe("machine-local Kitchen configuration", () => {
       maxTokens: 2048,
     },
   };
+  it("validates opt-in token policy and merges role limits without mutating the shared configuration", () => {
+    const selected = { ...deepseek, dsh: { ...deepseek.dsh, tokenPolicy: { version: 1, maxSteps: 4 } } };
+    expect(loadConfig(fixture({ providers: { author: selected } }, { providers: { author: { dsh: { maxTokens: 1024 } } } })).providers.author.dsh).toEqual({ ...selected.dsh, maxTokens: 1024 });
+    expect(() => loadConfig(fixture({ providers: { author: { ...selected, dsh: { ...selected.dsh, tokenPolicy: { version: 1, maxSteps: -1 } } } } }))).toThrow(/token policy/);
+  });
   it("replaces Codex-specific settings on a DeepSeek provider switch", () => {
     const root = fixture(
       {

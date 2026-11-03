@@ -110,6 +110,40 @@ afterEach(() => {
 });
 
 describe("station-specific context", () => {
+  it("compacts by role and removes only the repeated final revision request", () => {
+    const { state } = fixture();
+    state.conversation.push({ role: "operator", station: "plan", text: "Keep AC-1 and AC-2.", at: "now" });
+    const prompt = stationPrompt(state, "plan", "author", "context", "Keep AC-1 and AC-2.", true, true);
+    expect(prompt.match(/Keep AC-1 and AC-2\./g)).toHaveLength(1);
+    expect(prompt).toContain(state.conversation[0]!.text);
+    expect(prompt).toContain("- author:");
+    expect(prompt).not.toContain("- reviewer:");
+    const review = stationPrompt(state, "plan", "review", "context", "", true, true);
+    expect(review).toContain("- reviewer:");
+    expect(review).not.toContain("- author:");
+    expect(review).toContain("self-contained document");
+    state.conversation.push({ role: "operator", station: "plan", text: "Actually revise AC-1.", at: "later" });
+    expect(stationPrompt(state, "plan", "author", "", "Keep AC-1 and AC-2.", false, true).match(/Keep AC-1 and AC-2\./g)).toHaveLength(2);
+  });
+
+  it("keeps cross-station blockers and required documents while pruning unrelated state and profiles", async () => {
+    const { root, state, write } = fixture();
+    state.stations.publish = record("unrelated");
+    state.stations.publish.summary = "UNRELATED_PUBLISH_SUMMARY";
+    state.stations.publish.findings = [{ id: "block", rule: "AC-1", blocking: true, evidence: "REQUIRED_BLOCKER", consequence: "wrong", resolution: "fix" }];
+    write("kitchen.config.json", JSON.stringify({ profiles: {
+      used: { kind: "manual" }, unused: { kind: "manual", env: { LARGE: "UNRELATED_PROFILE" } },
+    } }));
+    state.stations.plan!.output!.checks = [{ id: "unit", profile: "used", files: [], acIds: ["AC-1"], required: true, expectation: "red" }];
+    const context = await buildContext(state, "implementation", root, true);
+    expect(context).toContain("REQUIRED_BLOCKER");
+    expect(context).not.toContain("UNRELATED_PUBLISH_SUMMARY");
+    expect(context.split("CHECK PROFILES")[1]!.split("RUNNER PREPARATION")[0]).not.toContain("UNRELATED_PROFILE");
+    expect(context).toContain('"used"');
+    expect(context).toContain("DOCUMENT_BODY_spec");
+    expect(context).toContain("DOCUMENT_BODY_test-plan");
+    expect(await buildContext(state, "test-plan", root, true)).toContain("UNRELATED_PROFILE");
+  });
   it("gives intent target instructions and an edited candidate without implementation context", async () => {
     const { root, state } = fixture();
     delete state.stations.plan;

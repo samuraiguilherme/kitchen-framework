@@ -43,6 +43,7 @@ import { instructions, rubric, stationPrompt } from "./prompts.ts";
 import { buildContext, targetPaths } from "./context.ts";
 import { discover, discoveryPolicy } from "./discovery.ts";
 import { promptSections, runMetrics, timed } from "./metrics.ts";
+import { compactDeepSeek, tokenPromptVersion } from "./token-budget.ts";
 import { executeSetup } from "./setup-runner.ts";
 import { Storage } from "./storage.ts";
 import { normalizeTestPlan } from "./test-plan.ts";
@@ -169,6 +170,16 @@ export class Kitchen {
     const config = loadConfig(this.root);
     const stationConfig = config.stations[station];
     const policy = {
+      tokenPromptVersion: [
+        station === "publish"
+          ? undefined
+          : (stationConfig?.author ?? config.providers.author),
+        stationConfig?.reviewEnabled
+          ? (stationConfig.review ?? config.providers.review)
+          : undefined,
+      ].some((role) => role?.provider === "deepseek")
+        ? tokenPromptVersion
+        : undefined,
       base: config.base,
       provider: {
         author:
@@ -327,12 +338,6 @@ export class Kitchen {
         "Accepted unit-tests and a tests-first commit are required.",
       );
   }
-  private async context(
-    state: FeatureState,
-    station: Station,
-  ): Promise<string> {
-    return buildContext(state, station, this.root);
-  }
   private record(): StationRecord {
     const config = loadConfig(this.root);
     return {
@@ -361,6 +366,7 @@ export class Kitchen {
   ): Promise<unknown> {
     if (options.signal?.aborted) throw new Error("Station cancelled.");
     const config = loadConfig(this.root);
+    const roleConfig = config.stations[station]?.[role] ?? config.providers[role];
     const before = await timed(
       options.metrics,
       "source snapshot before provider",
@@ -376,7 +382,7 @@ export class Kitchen {
     let context = await timed(
       options.metrics,
       "station context",
-      () => this.context(state, station),
+      () => buildContext(state, station, this.root, compactDeepSeek(roleConfig)),
       options.onProgress,
     );
     if (station === "plan" && role === "author" && config.discovery?.enabled) {
@@ -394,6 +400,15 @@ export class Kitchen {
             signal: options.signal,
             onProgress: options.onProgress,
             onMetrics: (metrics) => options.metrics?.providers.push(metrics),
+            onCache: (hit) => {
+              if (options.metrics) {
+                const cache = (options.metrics.discoveryCache ??= {
+                  hits: 0, misses: 0,
+                });
+                if (hit) cache.hits++;
+                else cache.misses++;
+              }
+            },
           }),
         options.onProgress,
       );
@@ -432,6 +447,7 @@ export class Kitchen {
       context,
       options.feedback,
       config.stations[station]?.reviewEnabled,
+      compactDeepSeek(roleConfig),
     );
     options.metrics?.promptBytes.push({
       role: role + suffix,
@@ -448,7 +464,7 @@ export class Kitchen {
           prompt,
           cwd: state.worktree,
           runDir: path.join(runDir, role + suffix),
-          config: config.stations[station]?.[role] ?? config.providers[role],
+          config: roleConfig,
           timeoutMs: config.providers.timeoutMs,
           signal: options.signal,
           onProgress: options.onProgress,

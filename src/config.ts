@@ -56,12 +56,19 @@ export function baseBranch(base: string): string {
   return branch;
 }
 
-export function loadConfig(root: string): Config {
+// Initialization can validate a prospective shared config against local overrides
+// before creating any files. An existing shared file always takes precedence.
+export function loadConfig(
+  root: string,
+  initialShared: Partial<Config> = {},
+): Config {
   const read = (name: string): Partial<Config> => {
     const file = path.join(root, name);
     return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   };
-  const shared = read("kitchen.config.json");
+  const shared = existsSync(path.join(root, "kitchen.config.json"))
+    ? read("kitchen.config.json")
+    : initialShared;
   const local = read("kitchen.config.local.json");
   const config: Config = {
     version: 1,

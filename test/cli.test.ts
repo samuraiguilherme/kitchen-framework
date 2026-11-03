@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createServer } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -105,6 +106,125 @@ describe("CLI workflow pauses", () => {
 });
 
 describe("standalone CLI", () => {
+  it("prints DSH, Ollama, model pin and structured-probe readiness through kitchen doctor", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "kitchen doctor cli "));
+    git(root, "init", "--initial-branch=main");
+    git(
+      root,
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.test",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "baseline",
+    );
+    const fixtureBin = path.join(root, "fixture bin");
+    mkdirSync(fixtureBin);
+    const server = createServer((_req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          models: [{ name: "local-deepseek", digest: "a".repeat(64) }],
+        }),
+      );
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string")
+        throw new Error("Missing fixture address");
+      const script = path.join(fixtureBin, "npx.mjs");
+      writeFileSync(
+        script,
+        [
+          "if(process.argv.includes('--version')) { console.log('0.2.2-alpha.3'); process.exit(0); }",
+          "for await(const chunk of process.stdin) {}",
+          "console.log(JSON.stringify({type:'session',sessionId:'doctor-cli'}));",
+          "console.log(JSON.stringify({type:'final',sessionId:'doctor-cli',reason:{kind:'completed'},text:JSON.stringify({summary:'Kitchen model probe OK',questions:[],document:null,files:[],allowedPaths:[],unitTestFiles:[],scaffoldFiles:[],checks:[]})}));",
+        ].join("\n"),
+      );
+      const launcher = path.join(
+        fixtureBin,
+        process.platform === "win32" ? "fake-npx.cmd" : "fake-npx",
+      );
+      writeFileSync(
+        launcher,
+        process.platform === "win32"
+          ? `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`
+          : `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`,
+        { mode: 0o755 },
+      );
+      writeFileSync(
+        path.join(fixtureBin, process.platform === "win32" ? "gh.cmd" : "gh"),
+        process.platform === "win32"
+          ? "@echo off\r\nexit /b 1\r\n"
+          : "#!/bin/sh\nexit 1\n",
+        { mode: 0o755 },
+      );
+      writeFileSync(
+        path.join(root, "kitchen.config.json"),
+        JSON.stringify({
+          base: "main",
+          providers: {
+            author: {
+              provider: "deepseek",
+              executable: launcher,
+              model: "local-deepseek",
+              dsh: {
+                version: "0.2.2-alpha.3",
+                baseURL: `http://127.0.0.1:${address.port}/v1`,
+                contextWindow: 8192,
+                maxTokens: 2048,
+                expectedModelDigest: "a".repeat(64),
+              },
+            },
+          },
+        }),
+      );
+      const result = await runProcess({
+        command: process.execPath,
+        args: [bin, "doctor", "--cwd", root],
+        cwd: root,
+        timeoutMs: 15000,
+        env: { PATH: fixtureBin + path.delimiter + process.env.PATH },
+      });
+      expect(result.code, result.stderr).toBe(0);
+      const checks = JSON.parse(result.stdout) as Array<{
+        id: string;
+        status: string;
+        required: boolean;
+        reason: string;
+      }>;
+      for (const id of [
+        "deepseek-configuration",
+        "dsh-cli",
+        "deepseek-node",
+        "ollama-server",
+        "deepseek-local",
+        "deepseek-model-1",
+      ])
+        expect(
+          checks.find((check) => check.id === id),
+          id,
+        ).toMatchObject({ status: "passed", required: true });
+      expect(
+        checks.find((check) => check.id === "deepseek-local")?.reason,
+      ).toContain("pin=matched");
+      expect(
+        checks.some(
+          (check) =>
+            check.id.startsWith("codex-") || check.id.startsWith("claude-"),
+        ),
+      ).toBe(false);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
   it("shows help outside a Git repository", async () => {
     const cwd = mkdtempSync(path.join(tmpdir(), "kitchen-help-"));
     const result = await invokeCli(cwd, ["--help"]);
@@ -167,6 +287,26 @@ describe("standalone CLI", () => {
     const evaluation = await invokeCli(cwd, ["evaluate", "spec", "--cwd", root]);
     expect(evaluation.code, evaluation.stderr).toBe(0);
     expect(JSON.parse(evaluation.stdout)).toMatchObject({ measured: false, labeled: 0 });
+  });
+
+  it("selects author/reviewer on init and rejects runtime role flags", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "kitchen-roles-"));
+    git(root, "init", "--initial-branch=main");
+    git(root, "-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "baseline");
+    const invalid = await invokeCli(root, ["init", "--author", "unknown"]);
+    expect(invalid.code).not.toBe(0);
+    expect(invalid.stderr).toContain("codex or claude");
+    expect(existsSync(path.join(root, "kitchen.config.json"))).toBe(false);
+    const result = await invokeCli(root, ["init", "--author", "claude", "--review", "codex", "--json"]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ author: "claude", review: "codex" });
+    const repeated = await invokeCli(root, ["init"]);
+    expect(repeated.stdout).toContain("Author: claude; reviewer: codex");
+    for (const role of ["author", "review"]) {
+      const rejected = await invokeCli(root, ["status", "answer", `--${role}`, "claude"]);
+      expect(rejected.code).not.toBe(0);
+      expect(rejected.stderr).toContain(`--${role} is only supported by kitchen init`);
+    }
   });
 
   it("explains missing Git repositories and base commits without creating config", async () => {

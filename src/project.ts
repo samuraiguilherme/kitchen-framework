@@ -10,7 +10,7 @@ import { baseBranch, loadConfig } from "./config.ts";
 import { safePath } from "./domain.ts";
 import { git } from "./git.ts";
 import { assetsRoot } from "./prompts.ts";
-import type { Config } from "./types.ts";
+import type { Config, ProviderName } from "./types.ts";
 
 export async function projectRoot(cwd: string): Promise<string> {
   let top: string;
@@ -89,12 +89,37 @@ async function githubRepository(root: string): Promise<string> {
 
 export async function initializeProject(
   root: string,
-  options: { base?: string } = {},
-): Promise<{ root: string; base: string; created: string[]; preserved: string[] }> {
+  options: { base?: string; author?: string; review?: string } = {},
+): Promise<{
+  root: string;
+  base: string;
+  author: ProviderName;
+  review: ProviderName;
+  created: string[];
+  preserved: string[];
+}> {
   const created: string[] = [];
   const preserved: string[] = [];
   const configPath = safePath(root, "kitchen.config.json");
   if (options.base !== undefined) baseBranch(options.base);
+  for (const role of ["author", "review"] as const)
+    if (
+      options[role] !== undefined &&
+      !["codex", "claude"].includes(options[role]!)
+    )
+      throw new Error(
+        `--${role} must select codex or claude. Configure DeepSeek with its model/runtime settings in kitchen.config.json.`,
+      );
+  const checkSelections = (effective: Config) => {
+    for (const role of ["author", "review"] as const)
+      if (
+        options[role] !== undefined &&
+        effective.providers[role].provider !== options[role]
+      )
+        throw new Error(
+          `Provider selection conflicts with providers.${role}. Edit kitchen.config.json or kitchen.config.local.json to change the effective role.`,
+        );
+  };
   let config: Config;
   if (existsSync(configPath)) {
     config = loadConfig(root);
@@ -102,6 +127,7 @@ export async function initializeProject(
       throw new Error(
         "kitchen.config.json already exists. Edit its base field to change the base branch.",
       );
+    checkSelections(config);
     preserved.push("kitchen.config.json");
   } else {
     const base = options.base ?? (await detectBase(root));
@@ -110,19 +136,21 @@ export async function initializeProject(
       throw new Error(
         `Base ${base} does not resolve to a commit. Create or fetch that branch before initializing Kitchen.`,
       );
-    config = {
+    const shared: Config = {
       version: 1,
       base,
       github: { repository: await githubRepository(root) },
       providers: {
-        author: { provider: "codex" },
-        review: { provider: "claude" },
+        author: { provider: options.author === "claude" ? "claude" : "codex" },
+        review: { provider: options.review === "codex" ? "codex" : "claude" },
         timeoutMs: 600000,
       },
       stations: {},
       profiles: {},
     };
-    writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", {
+    config = loadConfig(root, shared);
+    checkSelections(config);
+    writeFileSync(configPath, JSON.stringify(shared, null, 2) + "\n", {
       flag: "wx",
     });
     created.push("kitchen.config.json");
@@ -158,5 +186,12 @@ export async function initializeProject(
     );
     created.push(".gitignore (Kitchen entries)");
   } else preserved.push(".gitignore");
-  return { root, base: config.base, created, preserved };
+  return {
+    root,
+    base: config.base,
+    author: config.providers.author.provider,
+    review: config.providers.review.provider,
+    created,
+    preserved,
+  };
 }

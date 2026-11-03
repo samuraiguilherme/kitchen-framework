@@ -1,12 +1,19 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.ts";
 import { stationOrder } from "./domain.ts";
 import { runProcess } from "./process.ts";
 import { probeProvider } from "./providers.ts";
+import type { ProbeContract } from "./providers.ts";
 import { resolveProviderExecutable } from "./provider-executable.ts";
-import { deepseekVersionArgs } from "./deepseek.ts";
+import {
+  deepseekVersionArgs,
+  deepseekSetupRole,
+  readDeepSeekModels,
+  deepseekModelIdentity,
+} from "./deepseek.ts";
 import type { CheckResult, RoleConfig } from "./types.ts";
 
 export async function doctor(
@@ -28,9 +35,10 @@ export async function doctor(
   const pairs: Array<{
     config: RoleConfig;
     roles: string[];
+    contracts: Partial<Record<ProbeContract, string[]>>;
     prerequisites: string[];
   }> = [];
-  const addPair = (role: RoleConfig, label: string) => {
+  const addPair = (role: RoleConfig, label: string, contract: ProbeContract) => {
     const existing = pairs.find(
       (pair) =>
         pair.config.provider === role.provider &&
@@ -41,7 +49,11 @@ export async function doctor(
     );
     if (existing) {
       if (!existing.roles.includes(label)) existing.roles.push(label);
-    } else pairs.push({ config: role, roles: [label], prerequisites: [] });
+      const labels = (existing.contracts[contract] ??= []);
+      if (!labels.includes(label)) labels.push(label);
+    } else pairs.push({
+      config: role, roles: [label], contracts: { [contract]: [label] }, prerequisites: [],
+    });
   };
   for (const station of stationOrder) {
     const roles = config.stations[station];
@@ -49,14 +61,48 @@ export async function doctor(
       addPair(
         roles?.author ?? config.providers.author,
         roles?.author ? `stations.${station}.author` : "providers.author",
+        "author",
       );
     if (roles?.reviewEnabled)
       addPair(
         roles.review ?? config.providers.review,
         roles.review ? `stations.${station}.review` : "providers.review",
+        "review",
       );
   }
+  if (config.discovery?.enabled)
+    addPair(
+      config.stations.plan?.author ?? config.providers.author,
+      config.stations.plan?.author ? "stations.plan.author" : "providers.author",
+      "discovery",
+    );
   const packageFile = path.join(root, "package.json");
+  const localPairs = pairs.filter(
+    (pair) => pair.config.provider === "deepseek",
+  );
+  const localRequired = localPairs.length > 0;
+  const localRoles = localRequired
+    ? localPairs.map((pair) => pair.config)
+    : [deepseekSetupRole()];
+  results.push({
+    id: "deepseek-configuration",
+    required: localRequired,
+    status: localRequired ? "passed" : "unverified",
+    reason: localRequired
+      ? `Project ${root}; DeepSeek selected for ${localPairs.flatMap((pair) => pair.roles).join(", ")}.`
+      : `Project ${root}; default author=${config.providers.author.provider}; no active role uses DeepSeek. Select provider deepseek in kitchen.config.local.json or run pwsh -File "${fileURLToPath(new URL("../scripts/setup-deepseek.ps1", import.meta.url))}" -Root "${root}". Setup diagnostics below do not select it or generate with an unused model.`,
+  });
+  const endpoints = [...new Set(localRoles.map((role) => role.dsh!.baseURL))];
+  // Inventory calls overlap CLI checks, but their rejections are observed immediately.
+  const inventories = Promise.allSettled(
+    endpoints.map((baseURL) =>
+      readDeepSeekModels(
+        localRoles.find((role) => role.dsh!.baseURL === baseURL)!,
+        Math.min(config.providers.timeoutMs, localRequired ? 5000 : 2000),
+        options.signal,
+      ),
+    ),
+  );
   const packageManager = existsSync(packageFile)
     ? JSON.parse(readFileSync(packageFile, "utf8")).packageManager
     : undefined;
@@ -74,7 +120,13 @@ export async function doctor(
         profile.preview?.build.command,
       ].includes("pnpm"),
     );
-  const checks = [
+  const checks: Array<{
+    id: string;
+    command: string;
+    args: string[];
+    required: boolean;
+    timeoutMs?: number;
+  }> = [
     ...(needsPnpm
       ? [{ id: "pnpm", command: "pnpm", args: ["--version"], required: true }]
       : []),
@@ -112,7 +164,9 @@ export async function doctor(
       entry = {
         provider,
         command,
-        prefix: provider + (count ? `-${count + 1}` : ""),
+        prefix:
+          (provider === "deepseek" ? "dsh" : provider) +
+          (count ? `-${count + 1}` : ""),
         version: pair.config.dsh?.version,
       };
       executables.push(entry);
@@ -141,17 +195,34 @@ export async function doctor(
       ...(provider === "deepseek" ? [] : [`${entry.prefix}-auth`]),
     ];
   }
+  if (!localRequired) {
+    const role = localRoles[0]!;
+    const command = resolveProviderExecutable("deepseek");
+    executables.push({
+      provider: "deepseek",
+      command,
+      prefix: "dsh",
+      version: role.dsh!.version,
+    });
+    checks.push({
+      id: "dsh-cli",
+      command,
+      args: deepseekVersionArgs(role),
+      required: false,
+      timeoutMs: 3000,
+    });
+  }
   const settled = await Promise.allSettled(
     checks.map(async (check) => {
       const result = await runProcess({
         ...check,
         cwd: root,
-        timeoutMs: 10000,
+        timeoutMs: check.timeoutMs ?? 10000,
         signal: options.signal,
       });
       const failed =
         result.code !== 0 ||
-        (/^deepseek(?:-\d+)?-cli$/.test(check.id) &&
+        (/^dsh(?:-\d+)?-cli$/.test(check.id) &&
           result.stdout.trim() !==
             executables.find((entry) => `${entry.prefix}-cli` === check.id)
               ?.version) ||
@@ -163,7 +234,19 @@ export async function doctor(
           ? "Timed out; inspect CLI availability/authentication."
           : "Command unavailable, authentication failed, or pinned version differs."
         : result.stdout.trim().slice(0, 200) || "Available";
-      let status = failed ? "failed" : "passed";
+      let status = failed
+        ? check.required
+          ? "failed"
+          : "unverified"
+        : "passed";
+      if (/^dsh(?:-\d+)?-cli$/.test(check.id)) {
+        const version = executables.find(
+          (entry) => `${entry.prefix}-cli` === check.id,
+        )!.version;
+        reason = failed
+          ? `DSH ${version} is unavailable in the npm cache or reported another version. Prewarm with npx --yes @deepseek-ai/dsh@${version} --version.`
+          : `DeepSeek Harness ${version}; cached offline runtime verified.`;
+      }
       if (check.id.endsWith("-cli")) reason = `${check.command}: ${reason}`;
       if (
         check.id === "github-auth" &&
@@ -202,58 +285,129 @@ export async function doctor(
     );
   }
   const runDir = path.join(root, ".kitchen", "doctor", randomUUID());
-  if (pairs.some((pair) => pair.config.provider === "deepseek")) {
+  {
     const [major, minor] = process.versions.node.split(".").map(Number);
     const supported = major! > 24 || (major === 24 && minor! >= 9);
     results.push({
       id: "deepseek-node",
-      required: true,
-      status: supported ? "passed" : "failed",
+      required: localRequired,
+      status: supported ? "passed" : localRequired ? "failed" : "unverified",
       reason: `DSH requires Node >=24.9; current ${process.versions.node}`,
     });
     for (const pair of pairs)
       if (pair.config.provider === "deepseek")
         pair.prerequisites.push("deepseek-node");
   }
-  for (const [index, pair] of pairs.entries()) {
-    const label = `${pair.config.provider} model=${pair.config.model ?? "CLI default (inherited)"}${pair.config.provider === "codex" ? `; windowsSandbox=${pair.config.windowsSandbox ?? "CLI default (inherited)"}` : ""}; ${pair.roles.join(", ")}`;
+  const inventoryResults = await inventories;
+  const servers = new Map<string, { id: string; models?: unknown[] }>();
+  for (const [index, baseURL] of endpoints.entries()) {
+    const result = inventoryResults[index]!;
+    const id = `ollama-server${index ? `-${index + 1}` : ""}`;
+    const available = result.status === "fulfilled";
+    results.push({
+      id,
+      required: localRequired,
+      status: available ? "passed" : localRequired ? "failed" : "unverified",
+      reason: available
+        ? `Ollama reachable at ${baseURL}; ${result.value.length} installed model(s).`
+        : `Ollama unavailable at ${baseURL}: ${options.signal?.aborted ? "cancelled" : result.reason instanceof Error ? result.reason.message : String(result.reason)}. Start Ollama and complete local model setup.`,
+    });
+    servers.set(baseURL, {
+      id,
+      ...(available ? { models: result.value } : {}),
+    });
+  }
+  for (const [index, role] of localRoles.entries()) {
+    const id = `deepseek-local${index ? `-${index + 1}` : ""}`;
+    const server = servers.get(role.dsh!.baseURL)!;
     const check: CheckResult = {
-      id: `${pair.config.provider}-model-${index + 1}`,
-      required: true,
+      id,
+      required: localRequired,
       status: "unverified",
     };
-    const unavailable = pair.prerequisites.filter(
-      (id) => results.find((r) => r.id === id)?.status !== "passed",
-    );
-    if (unavailable.length)
-      check.reason = `${label}; request skipped because ${unavailable.join(", ")} did not pass.`;
-    else if (options.signal?.aborted)
-      check.reason = `${label}; cancelled before request.`;
-    else {
-      const probeDir = path.join(runDir, check.id);
-      options.onProgress?.(
-        `Checking ${label} with a small ${pair.config.provider === "deepseek" ? "local Ollama request" : "hosted request (uses model quota)"}.`,
-      );
+    if (!server.models)
+      check.reason = `model=${role.model}; inventory skipped because ${server.id} did not pass.`;
+    else
       try {
-        await probeProvider(
-          pair.config,
-          probeDir,
-          Math.min(
-            config.providers.timeoutMs,
-            pair.config.provider === "deepseek" ? 180000 : 60000,
-          ),
-          options.signal,
-        );
+        const identity = deepseekModelIdentity(role, server.models);
         check.status = "passed";
-        check.reason = `${label}; structured request succeeded.`;
+        check.reason = `model=${identity.model}; endpoint=${identity.baseURL}; digest=${identity.digest}; pin=${role.dsh!.expectedModelDigest ? "matched" : "not configured"}; contextWindow=${role.dsh!.contextWindow}; maxTokens=${role.dsh!.maxTokens}.`;
       } catch (error) {
-        check.status = "failed";
-        check.reason = `${label}; ${error instanceof Error ? error.message : String(error)}`;
+        check.status = localRequired ? "failed" : "unverified";
+        const installed = server.models.flatMap((model) =>
+          model &&
+          typeof model === "object" &&
+          "name" in model &&
+          typeof model.name === "string" &&
+          /deepseek/i.test(model.name)
+            ? [model.name]
+            : [],
+        );
+        check.reason = `${error instanceof Error ? error.message : String(error)} Installed DeepSeek models: ${installed.join(", ") || "none"}. Expected model=${role.model}.`;
       }
-      const evidence = path.join(probeDir, "review-process.json");
-      if (existsSync(evidence)) check.evidence = evidence;
-    }
     results.push(check);
+    localPairs[index]?.prerequisites.push(server.id, id);
+  }
+  if (!localRequired)
+    results.push({
+      id: "deepseek-probe",
+      required: false,
+      status: "unverified",
+      reason:
+        "Generation not run: DeepSeek is not selected for an active role. Configure kitchen.config.local.json, then rerun doctor to validate its final JSON schema.",
+    });
+  for (const [index, pair] of pairs.entries()) {
+    const contracts = Object.keys(pair.contracts) as ProbeContract[];
+    for (const [contractIndex, contract] of contracts.entries()) {
+      const label = [
+        `${pair.config.provider} model=${pair.config.model ?? "CLI default (inherited)"}`,
+        ...(pair.config.provider === "codex"
+          ? [`windowsSandbox=${pair.config.windowsSandbox ?? "CLI default (inherited)"}`]
+          : []),
+        `contract=${contract}`,
+        `executable=${resolveProviderExecutable(pair.config.provider, pair.config.executable)}`,
+        pair.contracts[contract]!.join(", "),
+      ].join("; ");
+      const check: CheckResult = {
+        id: `${pair.config.provider}-model-${index + 1}${contractIndex ? `-${contract}` : ""}`,
+        required: true,
+        status: "unverified",
+      };
+      const unavailable = pair.prerequisites.filter(
+        (id) => results.find((r) => r.id === id)?.status !== "passed",
+      );
+      if (unavailable.length)
+        check.reason = `${label}; request skipped because ${unavailable.join(", ")} did not pass.`;
+      else if (options.signal?.aborted)
+        check.reason = `${label}; cancelled before request.`;
+      else {
+        const probeDir = path.join(runDir, check.id);
+        options.onProgress?.(
+          `Checking ${label} with a small ${pair.config.provider === "deepseek" ? "local Ollama request" : "hosted request (uses model quota)"}.`,
+        );
+        try {
+          await probeProvider(
+            pair.config,
+            probeDir,
+            Math.min(
+              config.providers.timeoutMs,
+              pair.config.provider === "deepseek" ? 180000 : 60000,
+            ),
+            options.signal,
+            contract,
+          );
+          check.status = "passed";
+          check.reason = `${label}; structured request succeeded.`;
+        } catch (error) {
+          check.status = "failed";
+          check.reason = `${label}; ${error instanceof Error ? error.message : String(error)}`;
+        }
+        const role = contract === "review" ? "review" : "author";
+        const evidence = path.join(probeDir, `${role}-process.json`);
+        if (existsSync(evidence)) check.evidence = evidence;
+      }
+      results.push(check);
+    }
   }
   results.push({
     id: "github-intended-account",

@@ -29,6 +29,7 @@ export async function buildContext(
   state: FeatureState,
   station: Station,
   configRoot: string,
+  compact = false,
 ): Promise<string> {
   const config = loadConfig(configRoot);
   const selected: Record<Station, string[]> = {
@@ -57,16 +58,26 @@ export async function buildContext(
       sections.push(`DOCUMENT ${file}\n${readFileSync(absolute, "utf8")}`);
   }
   if (station === "intent") return sections.join("\n\n");
+  const execution = ["unit-tests", "implementation", "verify", "publish"].includes(station);
+  const relevant = new Set([
+    ...selected[station], station,
+    ...(execution ? ["unit-tests", "implementation"] : []),
+  ]);
+  const records = Object.entries(state.stations).filter(([name, record]) =>
+    !compact || relevant.has(name) ||
+    record?.findings.some((finding) => finding.blocking) ||
+    record?.output?.questions.length || record?.checks.length,
+  );
   sections.push(
     `LOCAL RUN STATE (full outputs/evidence remain in runner artifacts):\n${JSON.stringify(
       Object.fromEntries(
-        Object.entries(state.stations).map(([name, record]) => [
+        records.map(([name, record]) => [
           name,
           {
             status: record?.status,
             runId: record?.runId,
             commit: record?.commit,
-            summary: record?.summary,
+            summary: !compact || relevant.has(name) ? record?.summary : undefined,
             findings: record?.findings,
             artifactFiles: record?.artifactFiles,
             questions: record?.output?.questions,
@@ -78,9 +89,17 @@ export async function buildContext(
       ),
     )}`,
   );
+  const profileIds = new Set(Object.values(state.stations).flatMap(
+    (record) => record?.output?.checks.map((check) => check.profile) ?? [],
+  ));
+  const profiles = compact && execution && profileIds.size
+    ? Object.fromEntries(Object.entries(config.profiles).filter(
+        ([id]) => profileIds.has(id),
+      ))
+    : config.profiles;
   if (station !== "spec")
     sections.push(
-      `CHECK PROFILES (human-controlled):\n${JSON.stringify(config.profiles)}`,
+      `CHECK PROFILES (human-controlled):\n${JSON.stringify(profiles)}`,
     );
   if (["unit-tests", "implementation", "verify", "publish"].includes(station))
     sections.push(

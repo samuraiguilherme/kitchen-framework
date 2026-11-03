@@ -11,7 +11,7 @@ import { featureSummary } from "./console.ts";
 import type { FeatureState, Station } from "./types.ts";
 
 const usage = `Local Development Kitchen
-  kitchen init [--base <branch>]
+  kitchen init [--base <branch>] [--author <codex|claude>] [--review <codex|claude>]
   kitchen doctor
   kitchen start <feature> --request-file <path> [--issue <url>]
   kitchen run <feature> <station> [--feedback-file <path>] [--observations <json>]
@@ -38,6 +38,8 @@ async function main(): Promise<void> {
       live: { type: "boolean" },
       cwd: { type: "string" },
       base: { type: "string" },
+      author: { type: "string" },
+      review: { type: "string" },
       "request-file": { type: "string" },
       request: { type: "string" },
       issue: { type: "string" },
@@ -66,16 +68,24 @@ async function main(): Promise<void> {
     throw new Error(
       "--base is only supported by kitchen init. Edit kitchen.config.json to change an existing project's base.",
     );
+  for (const role of ["author", "review"] as const)
+    if (values[role] !== undefined && command !== "init")
+      throw new Error(
+        `--${role} is only supported by kitchen init. Edit providers.${role} in kitchen.config.json or kitchen.config.local.json for an existing project.`,
+      );
   const cwd = path.resolve(values.cwd ?? process.cwd());
   const quotedCwd = cwd.replaceAll("'", process.platform === "win32" ? "''" : "'\\''");
   const invocation = values.cwd ? `kitchen --cwd '${quotedCwd}'` : "kitchen";
   const root = await projectRoot(cwd);
   if (command === "init") {
-    const result = await initializeProject(root, { base: values.base });
+    const result = await initializeProject(root, {
+      base: values.base, author: values.author, review: values.review,
+    });
     console.log(
       values.json ? JSON.stringify(result, null, 2) : [
         `Kitchen initialized at ${root}`,
         `Base: ${result.base}`,
+        `Author: ${result.author}; reviewer: ${result.review} (model review is opt-in per station)`,
         ...result.created.map((file) => `Created/updated: ${file}`),
         ...result.preserved.map((file) => `Preserved: ${file}`),
         "Configure finite check profiles in kitchen.config.json before the test-plan station.",

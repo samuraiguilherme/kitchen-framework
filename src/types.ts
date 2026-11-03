@@ -45,6 +45,34 @@ export interface ProviderMetrics {
   actionableOutputMs?: number;
   toolCount: number;
   usage?: Record<string, number>;
+  tokens?: TokenMetrics;
+}
+export interface TokenStep {
+  step: number;
+  inputBytes: number;
+  estimatedInputTokens: number;
+  toolResultBytes: number;
+  sectionBytes?: Record<string, number>;
+  usage?: Record<string, number>;
+  finish?: string;
+}
+export interface TokenMetrics {
+  source: "dsh-llm-stream";
+  counting: "utf8-bytes-div-3-estimate";
+  kitchenPromptBytes?: number;
+  adapterInputBytes?: number;
+  adapterSections?: Record<string, number>;
+  modelSteps: number;
+  steps: TokenStep[];
+  usageComplete: boolean;
+  knownInputTokens: number;
+  knownOutputTokens: number;
+  knownTotalTokens: number;
+  totalTokens?: number;
+  toolResultBytes: number;
+  terminationReason?: string;
+  failure?: string;
+  warnings: string[];
 }
 export interface RunMetrics {
   startedAt: string;
@@ -59,6 +87,7 @@ export interface RunMetrics {
     total: number;
   }>;
   providers: ProviderMetrics[];
+  discoveryCache?: { hits: number; misses: number };
   sourceSnapshots?: Array<{
     phase: string;
     fileCount: number;
@@ -96,6 +125,18 @@ export interface DeepSeekOptions {
   contextWindow: number;
   maxTokens: number;
   expectedModelDigest?: string;
+  tokenPolicy?: DeepSeekTokenPolicy;
+}
+export interface DeepSeekTokenPolicy {
+  version: 1;
+  compactContext?: boolean;
+  safetyMarginTokens?: number;
+  toolHistoryReserveTokens?: number;
+  maxSteps?: number;
+  maxToolCalls?: number;
+  maxToolResultBytes?: number;
+  maxInputBytes?: number;
+  outputTokens?: { probe?: number; review?: number; discovery?: number };
 }
 export interface RoleConfig {
   provider: ProviderName;

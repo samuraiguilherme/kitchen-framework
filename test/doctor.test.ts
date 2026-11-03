@@ -27,6 +27,7 @@ const success: ProcessResult = {
 const rejection =
   "The 'unavailable-model' model is not supported when using Codex with a ChatGPT account.";
 let root: string;
+const authorProbe = { summary: "Kitchen model probe OK", questions: [], document: null, files: [], allowedPaths: [], unitTestFiles: [], scaffoldFiles: [], checks: [] };
 
 function config(overrides = {}) {
   writeFileSync(
@@ -42,7 +43,11 @@ function isProbe(options: ProcessOptions) {
 }
 async function fakeProcess(options: ProcessOptions): Promise<ProcessResult> {
   if (isProbe(options)) {
-    const output = { summary: "Kitchen model probe OK", findings: [] };
+    const schemaIndex = options.args.indexOf("--output-schema");
+    const schema = JSON.parse(schemaIndex >= 0 ? readFileSync(options.args[schemaIndex + 1]!, "utf8") : options.args[options.args.indexOf("--json-schema") + 1]!);
+    const output = schema.properties.questions ? authorProbe : schema.properties.evidence
+      ? { summary: "Kitchen model probe OK", evidence: [], unresolved: [] }
+      : { summary: "Kitchen model probe OK", findings: [] };
     const index = options.args.indexOf("--output-last-message");
     if (index >= 0) {
       writeFileSync(options.args[index + 1]!, JSON.stringify(output));
@@ -74,10 +79,146 @@ beforeEach(() => {
     JSON.stringify({ packageManager: "pnpm@9.15.9" }),
   );
   run.mockImplementation(fakeProcess);
+  vi.spyOn(globalThis, "fetch").mockRejectedValue(
+    new Error("Ollama is not running"),
+  );
 });
-afterEach(() => vi.resetAllMocks());
+afterEach(() => {
+  vi.resetAllMocks();
+  vi.restoreAllMocks();
+});
 
 describe("live model readiness diagnostics", () => {
+  it("probes each active response contract once without duplicating CLI/auth checks", async () => {
+    config({ providers: { author: { provider: "claude" }, review: { provider: "claude" } }, discovery: { enabled: true }, stations: { spec: { reviewEnabled: true }, verify: { reviewEnabled: true } } });
+    const results = await doctor(root);
+    const schemas = probes().map(p => JSON.parse(p.args[p.args.indexOf("--json-schema") + 1]!));
+    expect(schemas).toHaveLength(3);
+    expect(schemas.map(s => s.required)).toEqual(expect.arrayContaining([
+      expect.arrayContaining(["questions", "files"]), expect.arrayContaining(["findings"]), expect.arrayContaining(["evidence", "unresolved"]),
+    ]));
+    expect(run.mock.calls.filter(([p]) => p.command === "claude" && p.args.includes("--version"))).toHaveLength(1);
+    expect(run.mock.calls.filter(([p]) => p.command === "claude" && p.args.includes("auth"))).toHaveLength(1);
+    expect(results.filter(r => r.id.includes("-model-")).every(r => r.status === "passed")).toBe(true);
+    expect(results.find(r => r.reason?.includes("contract=discovery"))?.reason).toContain("providers.author");
+  });
+
+  it("fails author readiness when the provider returns only a valid review", async () => {
+    config({ providers: { author: { provider: "claude" }, review: { provider: "codex", executable: "unused-reviewer" } } });
+    run.mockImplementation(async p => isProbe(p) ? { ...success, stdout: JSON.stringify({ structured_output: { summary: "Kitchen model probe OK", findings: [] } }) } : fakeProcess(p));
+    const results = await doctor(root);
+    expect(results.find(r => r.id === "claude-model-1")).toMatchObject({ status: "failed", reason: expect.stringContaining("contract=author") });
+    expect(run.mock.calls.some(([p]) => p.command === "unused-reviewer")).toBe(false);
+  });
+
+  it("shows DSH and local DeepSeek setup checks before the provider is selected", async () => {
+    const results = await doctor(root);
+    for (const id of [
+      "deepseek-configuration",
+      "dsh-cli",
+      "deepseek-node",
+      "ollama-server",
+      "deepseek-local",
+      "deepseek-probe",
+    ]) {
+      expect(
+        results.find((r) => r.id === id),
+        id,
+      ).toMatchObject({ required: false });
+    }
+    expect(
+      results.find((r) => r.id === "deepseek-configuration"),
+    ).toMatchObject({
+      status: "unverified",
+      reason: expect.stringContaining("kitchen.config.local.json"),
+    });
+    expect(results.find((r) => r.id === "ollama-server")?.reason).toContain(
+      "127.0.0.1:11434",
+    );
+    expect(results.find((r) => r.id === "deepseek-local")?.status).toBe(
+      "unverified",
+    );
+    expect(
+      run.mock.calls.some(([request]) => request.args.includes("--profile")),
+    ).toBe(false);
+    expect(existsSync(path.join(root, "kitchen.config.local.json"))).toBe(
+      false,
+    );
+  });
+
+  it("shows installed local DeepSeek models without generating or changing providers", async () => {
+    vi.mocked(fetch).mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            models: [{ name: "deepseek-r1:8b", digest: "a".repeat(64) }],
+          }),
+        ),
+    );
+    const results = await doctor(root);
+    expect(results.find((r) => r.id === "ollama-server")).toMatchObject({
+      required: false,
+      status: "passed",
+    });
+    expect(results.find((r) => r.id === "deepseek-local")).toMatchObject({
+      required: false,
+      status: "unverified",
+      reason: expect.stringContaining("deepseek-r1:8b"),
+    });
+    expect(results.find((r) => r.id === "deepseek-probe")?.status).toBe(
+      "unverified",
+    );
+    expect(
+      run.mock.calls.some(([request]) => request.args.includes("--profile")),
+    ).toBe(false);
+    expect(loadConfig(root).providers.author.provider).toBe("codex");
+  });
+
+  it("reports a missing configured local model separately and skips its generation probe", async () => {
+    config({
+      providers: {
+        author: {
+          provider: "deepseek",
+          model: "missing-local",
+          dsh: {
+            version: "0.2.2-alpha.3",
+            baseURL: "http://127.0.0.1:11434/v1",
+            contextWindow: 8192,
+            maxTokens: 2048,
+          },
+        },
+      },
+    });
+    vi.mocked(fetch).mockImplementation(
+      async () => new Response(JSON.stringify({ models: [] })),
+    );
+    run.mockImplementation(async (options) =>
+      options.args.includes("@deepseek-ai/dsh@0.2.2-alpha.3")
+        ? { ...success, stdout: "0.2.2-alpha.3\n" }
+        : fakeProcess(options),
+    );
+    const results = await doctor(root);
+    expect(
+      results.find((r) => r.id === "deepseek-configuration"),
+    ).toMatchObject({ required: true, status: "passed" });
+    expect(results.find((r) => r.id === "ollama-server")).toMatchObject({
+      required: true,
+      status: "passed",
+    });
+    expect(results.find((r) => r.id === "deepseek-local")).toMatchObject({
+      required: true,
+      status: "failed",
+      reason: expect.stringContaining("missing-local"),
+    });
+    expect(results.find((r) => r.id === "deepseek-model-1")).toMatchObject({
+      required: true,
+      status: "unverified",
+      reason: expect.stringContaining("deepseek-local"),
+    });
+    expect(
+      run.mock.calls.some(([request]) => request.args.includes("--profile")),
+    ).toBe(false);
+  });
   it("checks a pinned local DSH runtime and schema probe without hosted login", async () => {
     const digest = `sha256:${"a".repeat(64)}`;
     config({
@@ -95,15 +236,14 @@ describe("live model readiness diagnostics", () => {
         },
       },
     });
-    const fetchSpy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () =>
         new Response(
           JSON.stringify({
             models: [{ name: "kitchen-deepseek-r1:8b", digest }],
           }),
         ),
-      );
+    );
     run.mockImplementation(async (options) => {
       if (options.args.includes("@deepseek-ai/dsh@0.2.2-alpha.3")) {
         if (options.args.includes("--version"))
@@ -115,10 +255,7 @@ describe("live model readiness diagnostics", () => {
             type: "final",
             sessionId: "local-probe",
             reason: { kind: "completed" },
-            text: JSON.stringify({
-              summary: "Kitchen model probe OK",
-              findings: [],
-            }),
+            text: JSON.stringify(authorProbe),
           },
         ]
           .map((e) => JSON.stringify(e))
@@ -132,13 +269,20 @@ describe("live model readiness diagnostics", () => {
       const results = await doctor(root, {
         onProgress: (message) => progress.push(message),
       });
-      expect(results.find((r) => r.id === "deepseek-cli")?.status).toBe(
-        "passed",
-      );
+      expect(results.find((r) => r.id === "dsh-cli")?.status).toBe("passed");
       expect(results.find((r) => r.id === "deepseek-model-1")?.status).toBe(
         "passed",
       );
       expect(results.some((r) => r.id === "deepseek-auth")).toBe(false);
+      expect(results.find((r) => r.id === "ollama-server")).toMatchObject({
+        required: true,
+        status: "passed",
+      });
+      expect(results.find((r) => r.id === "deepseek-local")).toMatchObject({
+        required: true,
+        status: "passed",
+        reason: expect.stringContaining(digest),
+      });
       expect(
         run.mock.calls.some(
           ([o]) => o.args.includes("login") || o.args.includes("auth"),

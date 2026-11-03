@@ -85,6 +85,39 @@ afterEach(() => {
 });
 
 describe("read-only repository discovery", () => {
+  it("uses the effective Claude plan author and invalidates only effective provider settings", async () => {
+    const setup = fixture();
+    const calls: ProviderRequest[] = [];
+    const provider: Provider = async request => { calls.push(request); return setup.output(request); };
+    setup.config.providers.author = { provider: "claude", model: "primary" };
+    await discover(setup.options(provider));
+    await discover(setup.options(provider));
+    expect(calls).toHaveLength(2);
+    expect(calls.every(call => call.config.provider === "claude" && call.role === "author")).toBe(true);
+    setup.config.providers.author = { provider: "claude", model: "changed" };
+    await discover(setup.options(provider));
+    expect(calls).toHaveLength(4);
+    setup.config.stations.plan = { author: { provider: "codex", model: "station" } };
+    await discover(setup.options(provider));
+    expect(calls).toHaveLength(6);
+    expect(calls.at(-1)?.config).toEqual({ provider: "codex", model: "station" });
+    setup.config.providers.author = { provider: "claude", model: "unused" };
+    await discover(setup.options(provider));
+    expect(calls).toHaveLength(6);
+  });
+  it("reports hits and misses and invalidates a changed DeepSeek token policy", async () => {
+    const setup = fixture();
+    setup.config.providers.author = { provider: "deepseek", model: "local", dsh: { version: "0.2.2-alpha.3", baseURL: "http://127.0.0.1:11434/v1", contextWindow: 8192, maxTokens: 2048, tokenPolicy: { version: 1, maxSteps: 4 } } };
+    let calls = 0;
+    const events: boolean[] = [];
+    const options = setup.options(async (request) => { calls++; return setup.output(request); }, { onCache: (hit) => events.push(hit) });
+    await discover(options);
+    await discover(options);
+    setup.config.providers.author.dsh!.tokenPolicy!.maxSteps = 5;
+    await discover(options);
+    expect(events).toEqual([false, true, false]);
+    expect(calls).toBe(4);
+  });
   it("serializes local DeepSeek discovery and stops before the second task on failure", async () => {
     const setup = fixture();
     setup.config.providers.author = { provider: "deepseek", model: "local" };

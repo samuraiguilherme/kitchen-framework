@@ -55,6 +55,16 @@ Claude reviews still use Claude's hosted service; select DeepSeek explicitly
 for all enabled roles to run every model locally.
 
 Run `kitchen doctor` from the target project after initialization. DeepSeek
+setup diagnostics are shown even before DeepSeek is selected: `dsh-cli` checks
+the cached harness, `deepseek-node` checks its Node runtime, `ollama-server`
+checks the endpoint, and `deepseek-local` reports the expected alias and installed
+DeepSeek models. `deepseek-configuration` identifies the project and explains how
+to enable the provider. These checks are optional while it is unused; no local
+generation is started. Selecting an active DeepSeek role makes its readiness
+checks required. Configured model details include the digest pin and context/output
+limits, and missing infrastructure is reported before attempting generation.
+
+Once configured, DeepSeek
 readiness checks the exact cached CLI version, local model/digest, and an
 isolated no-tools schema request with a maximum of 180 seconds. It requires no
 DeepSeek API key or hosted login. Normal requests use the prewarmed npm cache
@@ -91,6 +101,73 @@ This checks the real DSH profile, tool catalogue, repository read, final output,
 and metrics. The default test suite uses fake executables and a local HTTP
 fixture and does not download DSH or use a paid model. Real DeepSeek model
 quality and context capacity still require a representative Kitchen workflow.
+
+## Reduce token usage
+
+The DeepSeek example enables an opt-in `dsh.tokenPolicy`. Merge that object into
+the selected author or reviewer in `kitchen.config.local.json` to use compact
+context and bounded exploration. Policy changes invalidate affected approvals
+and discovery caches. Remove `tokenPolicy` to restore the previous context and
+unbounded exploration behavior; model-call instrumentation remains available.
+
+Version 1 defaults to 8 model steps, 12 tool calls, and 32,768 bytes of cumulative
+tool-result content in a model request. It reserves 512 context tokens for safety
+and 1,024 for future tool history. Set those values explicitly to qualify a
+different workload. `maxToolCalls` can be zero for tasks requiring no reads.
+An optional positive `maxInputBytes` imposes a hard limit on the serialized
+harness request before inference. Limits stop the run with an explanation;
+required documents, source changes, and output are never silently truncated.
+
+At the initial 8,192/2,048 settings, the advisory initial input target is 4,608
+tokens, and later steps have a 5,632-token input target. Estimates use serialized
+UTF-8 bytes divided by three; they are not exact model token counts or a fit
+guarantee. The serialized harness projection includes internal metadata and can
+be larger than the provider's wire request. Reported input usage includes cache
+reads/writes and is checked after each step. A backend context error or an
+incomplete generation fails the run even if its partial text looks like JSON.
+
+Each role now retains `*-token-events.jsonl` with full harness request projections,
+section sizes, per-step usage, warnings, and termination reasons. The process
+metrics distinguish the Kitchen prompt, final adapter input (including the
+schema), and model steps. `knownTotalTokens` preserves measured partial totals;
+`totalTokens` appears only when every attempted step supplies usage. Reasoning
+is already included in generated tokens and is not added twice. Evidence stays
+under the existing local run directory and follows its retention policy.
+All-zero usage from the pinned adapter is treated as incomplete because it can
+represent a provider response with no usage data.
+
+The default output cap is unchanged. Optional `tokenPolicy.outputTokens` keys
+`probe`, `review`, and `discovery` accept positive caps up to `dsh.maxTokens`.
+Document and implementation authoring keep the full configured cap. Qualify
+short-task caps against the installed model before using them; a smaller cap
+that creates incomplete JSON does not save tokens per successful task. Thinking
+controls are not exposed without model and transport qualification.
+
+Compare all eight workload cases without model inference:
+
+```powershell
+node --import tsx scripts/benchmark-deepseek-tokens.ts
+```
+
+Then qualify against the installed local model, using three repetitions per
+normal case. No hosted fallback is used. The benchmark records the model digest,
+thinking metadata when present, initial load state, source fingerprint, every
+attempt, and correctness checks. Source proposals are inspected and are not
+executed by the benchmark. Large-context rejection is reported separately.
+
+```powershell
+node --import tsx scripts/benchmark-deepseek-tokens.ts --live --iterations 3
+# Use a complete saved provider configuration, including its timeout and limits:
+node --import tsx scripts/benchmark-deepseek-tokens.ts --config C:/work/deepseek-test.json --live --iterations 1 --stop-on-failure
+# Optional first canary; stop if the local model cannot complete a case:
+node --import tsx scripts/benchmark-deepseek-tokens.ts --live --iterations 1 --cases intent-initial,review-seeded-defect --stop-on-failure
+```
+
+Reports go into a new `.kitchen/benchmarks/deepseek-tokens-*` directory. Existing
+output directories cannot be reused. Offline results describe bytes only.
+Promotion requires complete usage and correctness across all cases, at least
+three repetitions, successful large-context handling, and a median token
+reduction of at least 30%. Keep token savings separate from timing effects.
 
 ## Troubleshooting and rollback
 

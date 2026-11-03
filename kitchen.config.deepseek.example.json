@@ -7,7 +7,16 @@
         "version": "0.2.2-alpha.3",
         "baseURL": "http://127.0.0.1:11434/v1",
         "contextWindow": 8192,
-        "maxTokens": 2048
+        "maxTokens": 2048,
+        "tokenPolicy": {
+          "version": 1,
+          "compactContext": true,
+          "maxSteps": 8,
+          "maxToolCalls": 12,
+          "maxToolResultBytes": 32768,
+          "safetyMarginTokens": 512,
+          "toolHistoryReserveTokens": 1024
+        }
       }
     },
     "timeoutMs": 1200000

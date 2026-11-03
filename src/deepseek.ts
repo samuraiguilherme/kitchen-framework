@@ -4,6 +4,9 @@ import { fileURLToPath } from "node:url";
 import { stringify } from "yaml";
 import { createHash } from "node:crypto";
 import { resolveProviderExecutable } from "./provider-executable.ts";
+import {
+  generationLimit, tokenBudget, validateTokenPolicy,
+} from "./token-budget.ts";
 import type {
   Config,
   DeepSeekOptions,
@@ -69,6 +72,8 @@ export function validateDeepSeekConfig(config: RoleConfig): DeepSeekOptions {
     throw new Error(
       "Invalid DeepSeek provider configuration: require an exact DSH version, explicit local model, loopback /v1 URL and positive context/output limits.",
     );
+  if (options.tokenPolicy !== undefined)
+    validateTokenPolicy(options.tokenPolicy, options);
   return options;
 }
 
@@ -82,7 +87,20 @@ export function deepseekVersionArgs(config: RoleConfig): string[] {
   ];
 }
 
-export async function checkDeepSeekModel(
+export function deepseekSetupRole(): RoleConfig {
+  return {
+    provider: "deepseek",
+    model: "kitchen-deepseek-r1:8b",
+    dsh: {
+      version: "0.2.2-alpha.3",
+      baseURL: "http://127.0.0.1:11434/v1",
+      contextWindow: 8192,
+      maxTokens: 2048,
+    },
+  };
+}
+
+export async function readDeepSeekModels(
   config: RoleConfig,
   timeoutMs: number,
   signal?: AbortSignal,
@@ -103,8 +121,17 @@ export async function checkDeepSeekModel(
       : undefined;
   if (!Array.isArray(models))
     throw new Error("Invalid Ollama model inventory.");
+  return models as unknown[];
+}
+
+export function deepseekModelIdentity(config: RoleConfig, models: unknown[]) {
+  const options = validateDeepSeekConfig(config);
   const model = models.find(
-    (item) => item && typeof item === "object" && item.name === config.model,
+    (item): item is { name: string; digest?: unknown } =>
+      item !== null &&
+      typeof item === "object" &&
+      "name" in item &&
+      item.name === config.model,
   );
   if (!model)
     throw new Error(
@@ -124,6 +151,17 @@ export async function checkDeepSeekModel(
     digest,
     baseURL: options.baseURL,
   };
+}
+
+export async function checkDeepSeekModel(
+  config: RoleConfig,
+  timeoutMs: number,
+  signal?: AbortSignal,
+) {
+  return deepseekModelIdentity(
+    config,
+    await readDeepSeekModels(config, timeoutMs, signal),
+  );
 }
 
 export async function checkDeepSeekPins(
@@ -153,6 +191,9 @@ export function prepareDeepSeek(
   const home = path.join(runDir, `${request.role}-dsh-home`);
   mkdirSync(home, { recursive: true });
   const allowTools = probe ? [] : readTools;
+  const maxTokens = generationLimit(request, probe);
+  const measurementFile = path.join(runDir, `${request.role}-token-events.jsonl`);
+  writeFileSync(measurementFile, "");
   // Remove model-visible capabilities as well as guarding execution. The guard
   // remains authoritative if a future DSH version registers an additional tool.
   const disabled = [
@@ -205,7 +246,7 @@ export function prepareDeepSeek(
               {
                 id: request.config.model,
                 contextWindow: options.contextWindow,
-                maxTokens: options.maxTokens,
+                maxTokens,
               },
             ],
           },
@@ -232,7 +273,13 @@ export function prepareDeepSeek(
         {
           id: "kitchen-read-only",
           name: fileURLToPath(new URL("./deepseek-guard.mjs", import.meta.url)),
-          config: { allowTools },
+          config: {
+            allowTools,
+            measurementFile,
+            maxTokens,
+            budget: tokenBudget(options, maxTokens),
+            policy: options.tokenPolicy,
+          },
         },
       ],
     },
@@ -241,7 +288,10 @@ export function prepareDeepSeek(
   const overlayText = stringify(overlay);
   const overlayFile = path.join(runDir, `${request.role}-dsh.patch.yml`);
   writeFileSync(overlayFile, overlayText);
-  const input = `${request.prompt}\n\nKITCHEN OUTPUT CONTRACT\nReturn exactly one JSON object matching this JSON Schema. Do not wrap it in Markdown or include commentary outside JSON. Never execute shell commands or write files; return proposed changes only in the schema.\n${JSON.stringify(schema)}\n`;
+  const guidance = options.tokenPolicy && request.station !== "intent" && !probe
+    ? "\nUse targeted glob/grep and bounded reads; avoid rereading unchanged content. Keep summaries concise and return complete content.\n"
+    : "";
+  const input = `${request.prompt}${guidance}\n\nKITCHEN OUTPUT CONTRACT\nReturn exactly one JSON object matching this JSON Schema. Do not wrap it in Markdown or include commentary outside JSON. Never execute shell commands or write files; return proposed changes only in the schema.\n${JSON.stringify(schema)}\n`;
   return {
     command: resolveProviderExecutable("deepseek", request.config.executable),
     args: [
@@ -265,6 +315,8 @@ export function prepareDeepSeek(
       KITCHEN_OLLAMA_API_KEY: "ollama",
     },
     input,
+    measurementFile,
+    maxTokens,
     overlayFile,
     overlayHash: createHash("sha256").update(overlayText).digest("hex"),
   };

@@ -87,6 +87,50 @@ async function ollama(
 }
 
 describe("DeepSeek headless contract", () => {
+  it("measures immutable full requests and stops oversized inputs, long tool loops and truncated generations", async () => {
+    const module = await import(new URL("../src/deepseek-guard.mjs", import.meta.url).href);
+    const req = request();
+    mkdirSync(req.runDir, { recursive: true });
+    const measurementFile = path.join(req.runDir, "tokens.jsonl");
+    let stream: (options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>;
+    let guard: (call: { name: string }) => unknown;
+    const install = (policy: unknown) => module.apply({
+      tools: { guard(fn: typeof guard) { guard = fn; } },
+      on(event: string, fn: typeof stream) { expect(event).toBe("llm/stream"); stream = fn; },
+      provide() {},
+    }, { allowTools: ["read"], measurementFile, maxTokens: 2048,
+      budget: { maxInputTokens: 5632, initialInputTarget: 4608 }, policy });
+    install({ version: 1, maxSteps: 1, maxToolCalls: 1 });
+    const options = Object.freeze({ model: "local", messages: Object.freeze([{ role: "user", content: "Olá 世界" }]), tools: [{ name: "read" }] });
+    let calls = 0;
+    async function* next() { calls++; yield { type: "usage", usage: { inputTokens: 12, outputTokens: 3 } }; yield { type: "finish", reason: { kind: "stop" } }; }
+    const collect = async (input: unknown) => { const chunks = []; for await (const chunk of stream!(input, next)) chunks.push(chunk); return chunks; };
+    expect(await collect(options)).toHaveLength(2);
+    expect(JSON.parse(readFileSync(measurementFile, "utf8").split("\n")[0]!).request.messages[0].content).toBe("Olá 世界");
+    expect(await collect(options)).toMatchObject([{ type: "finish", reason: { kind: "error" } }]);
+    expect(calls).toBe(1);
+    expect(guard!({ name: "read" })).toBeUndefined();
+    expect(guard!({ name: "read" })).toContain("tool-call limit");
+    expect(guard!({ name: "write" })).toContain("DENIED");
+    install({ version: 1, maxInputBytes: 1 });
+    expect(await collect(options)).toMatchObject([{ reason: { kind: "error" } }]);
+    expect(calls).toBe(1);
+    install({ version: 1, maxToolResultBytes: 2 });
+    expect(await collect({ messages: [{ role: "tool", content: "large" }] })).toMatchObject([{ reason: { kind: "error" } }]);
+    expect(calls).toBe(1);
+    install(undefined);
+    for await (const _chunk of stream!(options, async function* () { yield { type: "finish", reason: { kind: "max-tokens" } }; })) { /* drain */ }
+    expect(readFileSync(measurementFile, "utf8")).toContain("incomplete generation");
+    install({ version: 1 });
+    const excessiveUsage = [];
+    for await (const chunk of stream!(options, async function* () {
+      yield { type: "usage", usage: { inputTokens: 6000, outputTokens: 3 } };
+      yield { type: "finish", reason: { kind: "stop" } };
+    })) excessiveUsage.push(chunk);
+    expect(excessiveUsage.at(-1)).toMatchObject({ reason: { kind: "error" } });
+    const lastEvent = JSON.parse(readFileSync(measurementFile, "utf8").trim().split("\n").at(-1)!);
+    expect(lastEvent.finish).toBe("budget-exceeded");
+  });
   it("uses the lossless final answer, including answers above the text-event cap", () => {
     const output = { ...review, summary: "x".repeat(20000) };
     expect(parseDeepSeekOutput(ndjson(transcript(output)))).toEqual(output);
