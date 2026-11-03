@@ -6,10 +6,10 @@ describe("GitHub boundary", () => {
     const calls: string[][] = [];
     const github = new GitHub(async (_command, args) => {
       calls.push(args);
-      return "https://github.com/HireBus/hirebus-v3/pull/1\n";
+      return "https://github.com/example/project/pull/1\n";
     });
     const url = await github.create({
-      repository: "HireBus/hirebus-v3",
+      repository: "example/project",
       base: "develop",
       head: "codex/kitchen/invites",
       title: "Invites",
@@ -19,7 +19,7 @@ describe("GitHub boundary", () => {
     expect(calls[0]).toEqual(
       expect.arrayContaining([
         "--repo",
-        "HireBus/hirebus-v3",
+        "example/project",
         "--base",
         "develop",
         "--head",
@@ -35,11 +35,11 @@ describe("GitHub boundary", () => {
     const github = new GitHub(async (_command, args) => {
       calls.push(args);
       return JSON.stringify([
-        { url: "https://github.com/HireBus/hirebus-v3/pull/1" },
+        { url: "https://github.com/example/project/pull/1" },
       ]);
     });
     expect(
-      await github.find("HireBus/hirebus-v3", "codex/kitchen/invites"),
+      await github.find("example/project", "codex/kitchen/invites"),
     ).toContain("/pull/1");
     expect(calls[0]?.slice(0, 2)).toEqual(["pr", "list"]);
   });

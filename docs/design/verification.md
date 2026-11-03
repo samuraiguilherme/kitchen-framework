@@ -18,9 +18,9 @@ Publication regression checkpoint: `ea18bc384` (observed assertion failure befor
 |---|---|---|
 | Initial contract tests before implementation | 54 failed, 20 passed | Minimal signatures only; expected missing implementation, not a final verification pass |
 | Final deterministic suite | passed: 92 tests in 9 files | Temporary repositories, fake hosted CLI executables, fake GitHub writes and local preview |
-| TypeScript | passed | `pnpm --filter @hirebus/kitchen check:types` |
-| Repository lint | passed: zero warnings/errors | `pnpm --filter @hirebus/kitchen lint` |
-| Root CLI help | passed | `pnpm kitchen --help` |
+| TypeScript | passed | `pnpm check:types` |
+| Repository lint | passed: zero warnings/errors | `pnpm lint` |
+| Root CLI help | passed | `kitchen --help` |
 | Evaluation CLI without live calls | passed | Proposed examples shown; 0 human labels, measured=false |
 | Node / pinned pnpm | passed | Node 22.20.0, pnpm 9.15.9 |
 | Codex CLI / stored login | passed | CLI 0.142.5; no live inference claimed |
@@ -51,6 +51,6 @@ The user authorized implementation and explicitly deferred GitHub publication. N
 
 ## Limitations
 
-Live model semantic quality remains unverified and requires human-labeled company examples. Authenticate Claude before using the default author/reviewer pair. Browser/integration checks require package-specific local fixtures and a reviewed candidate-targeting wrapper/config. Worktrees isolate source/Git state; they do not provide an OS/network sandbox. Machine-managed provider policy and local configuration/state remain trusted operator infrastructure.
+Live model semantic quality remains unverified and requires human-labeled project examples. Authenticate Claude before using the default author/reviewer pair. Browser/integration checks require package-specific local fixtures and a reviewed candidate-targeting wrapper/config. Worktrees isolate source/Git state; they do not provide an OS/network sandbox. Machine-managed provider policy and local configuration/state remain trusted operator infrastructure.
 
 The deterministic workflow uses fake GitHub writes; real push/create must be checked when publication is resumed with an explicitly chosen username. No merge or deployment is included.

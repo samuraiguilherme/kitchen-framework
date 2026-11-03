@@ -6,7 +6,7 @@
     {
       "id": "implementation-acceptable",
       "context": "Accepted tests check idempotence and tenant isolation. Scope only completion.ts and completion.test.ts; unit tests already committed and hashed.",
-      "candidate": "completion.ts diff: derive companyId from the validated event; await repo.listActiveOwners(companyId); for each owner await repo.insertIfAbsent(companyId, applicationId, owner.id). Approved unit tests unchanged. Runner reports 2/2 GREEN, same source fingerprint, no scope deviations.",
+      "candidate": "completion.ts diff: derive workspaceId from the validated event; await repo.listActiveOwners(workspaceId); for each owner await repo.insertIfAbsent(workspaceId, taskId, owner.id). Approved unit tests unchanged. Runner reports 2/2 GREEN, same source fingerprint, no scope deviations.",
       "expected": "acceptable",
       "humanLabel": null
     },

@@ -20,7 +20,7 @@ if (
 )
   throw new Error("--files and --iterations must be positive integers.");
 
-const root = fileURLToPath(new URL("../../../", import.meta.url));
+const root = fileURLToPath(new URL("../", import.meta.url));
 const files = (await sourceFiles(root, "hashing-benchmark")).slice(0, count);
 // Preserve the original implementation as a comparison, including all original
 // safety checks. No provider requests, source writes or dependency setup run.

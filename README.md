@@ -4,7 +4,7 @@ A local Node 22 / TypeScript runner for a human-approved feature workflow. Codex
 
 ## Start locally
 
-Use pnpm 9.15.9 (pinned in `package.json`) and Node 22. No database, queue, Docker service or daemon is required for the runner.
+Use Node 22 or newer. This framework's development checkout uses pnpm 9.15.9 (pinned in `package.json`); target projects can use their own language and package manager. No database, queue, Docker service or daemon is required for the runner.
 
 Install this repository once and expose the `kitchen` command:
 
@@ -13,13 +13,30 @@ pnpm install --ignore-scripts
 pnpm link --global
 ```
 
-Then run it from inside the target repository. The command examples below use `pnpm kitchen`, matching the CLI's own hints; with the global link, type `kitchen` instead, or add `"kitchen": "kitchen"` to the target repository's `package.json` scripts. The target needs a root `kitchen.config.json` (start from `kitchen.config.example.json`) and, optionally, station templates in `docs/_templates/` (starters in `templates/`).
+Then initialize any target Git repository that has an initial commit:
 
 ```powershell
-pnpm kitchen doctor
-pnpm kitchen start completion-notifications --request-file C:/work/request.txt
-pnpm kitchen run completion-notifications intent
-pnpm kitchen approve completion-notifications intent --actor your-name --minutes 5
+cd C:/work/my-project
+kitchen init
+# Or select the project from anywhere:
+kitchen --cwd C:/work/my-project init --base origin/main
+```
+
+`init` creates `kitchen.config.json`, copies the four document templates into `docs/_templates/`, and adds `.kitchen/` and `kitchen.config.local.json` to `.gitignore`. Existing config and templates are preserved; repeated initialization is safe. It does not fetch, commit, install project dependencies, or call providers. Review and commit the generated shared configuration and templates yourself.
+
+The base is detected from the local `origin/HEAD`, then existing `origin/main`, `origin/master` or `origin/develop`, then the current local branch or a local default branch. Use `--base <branch>` to choose explicitly, such as `origin/release/next` or local `main` for an offline project. The ref must already resolve to a commit. Edit `base` in an existing config to change it; older configs that omit it retain `origin/develop` as their default.
+
+Initialization leaves `profiles` empty so you can define checks for your project before the test-plan station. `kitchen.config.example.json` includes a Vitest profile to adapt if appropriate. Provider models inherit the installed CLIs' defaults. The GitHub repository is inferred from a GitHub `origin` URL when possible; set the exact `github.account` before publication.
+
+Every command accepts `--cwd <path>`. File arguments (requests, feedback, JSON inputs, labels and report output) resolve relative to that selected directory, or to your current directory when omitted. Commands from subdirectories or linked worktrees share the main repository's configuration and Kitchen state. The framework and its dependencies stay in this installation; target projects need no Kitchen package or package script.
+
+You can also install a local package archive using `npm pack` in this checkout followed by `npm install --global C:/path/to/kitchen-0.1.0.tgz`. The archive includes runtime dependencies in its manifest and all rubrics, examples and templates. Without a global link/install, invoke `node C:/path/to/kitchen/bin/kitchen.mjs --cwd C:/work/my-project <command>` directly.
+
+```powershell
+kitchen doctor
+kitchen start completion-notifications --request-file C:/work/request.txt
+kitchen run completion-notifications intent
+kitchen approve completion-notifications intent --actor your-name --minutes 5
 ```
 
 Authenticate the CLIs separately when doctor reports missing login: `codex login` and `claude auth login`. Doctor does not change accounts or log you in. GitHub is optional until publication. An explicit intended `github.account` in root `kitchen.config.json` is mandatory before pushing; the runner never selects an account for you.
@@ -28,7 +45,7 @@ Doctor checks the CLI executables and logins used by station authors and enabled
 
 Model checks identify the configured model and roles. When `model` is omitted, they say `CLI default (inherited)` and test that choice without adding an override. Probes run in separate scratch directories without the feature request or repository instructions. Raw evidence is retained under `.kitchen/doctor/<run-id>/`. Doctor does not rerun a feature station.
 
-Run from the target repository or a kitchen worktree: the CLI resolves the common repository root. `origin/develop` must exist locally. Start pins that ref without fetching or changing your working checkout. Publication compares it with the remote develop branch again.
+Start pins the configured base ref without fetching or changing your working checkout. Publication compares it with the same named branch on `origin` again and uses that branch as the draft PR's base. Local workflow stages can run without GitHub; publication requires a matching GitHub origin and intended account.
 
 ## Work through each station
 
@@ -51,17 +68,17 @@ Unresolved author questions take precedence over any bundled draft or file propo
 | 8         | publish        | exact local preview, acceptance, push and recoverable draft PR                             |
 
 ```powershell
-pnpm kitchen run completion-notifications spec
-pnpm kitchen approve completion-notifications spec --actor your-name
+kitchen run completion-notifications spec
+kitchen approve completion-notifications spec --actor your-name
 # Repeat for plan, test-plan, unit-tests, implementation, verify.
-pnpm kitchen status completion-notifications
-pnpm kitchen report completion-notifications
-pnpm kitchen publish completion-notifications --preview
-pnpm kitchen approve completion-notifications publish --actor your-name
-pnpm kitchen publish completion-notifications
+kitchen status completion-notifications
+kitchen report completion-notifications
+kitchen publish completion-notifications --preview
+kitchen approve completion-notifications publish --actor your-name
+kitchen publish completion-notifications
 ```
 
-`start --issue https://github.com/HireBus/hirebus-v3/issues/123` records an optional issue link. There is no issue/project management, merge or deployment step. Publication is intentionally a separate human checkpoint.
+`start --issue https://github.com/owner/repository/issues/123` records an optional issue link. There is no issue/project management, merge or deployment step. Publication is intentionally a separate human checkpoint.
 
 Documents live in the feature worktree at `docs/features/<feature>/`: `intent.md`, `spec.md`, `plan.md` and `test-plan.md`. Each successful document run writes its draft there. `approve <feature> <station>` commits that document on `codex/kitchen/<feature>` after validating the approval gates and any applicable independent review. Each document gets its own commit; unrelated staged files block approval. The main checkout is unchanged.
 
@@ -96,8 +113,8 @@ unit-test authoring. After accepting plan/test-plan, apply only their approved
 runtime changes in the feature worktree and run:
 
 ```powershell
-pnpm kitchen prepare plans-section --preparation C:/work/preparation.json
-pnpm kitchen run plans-section unit-tests
+kitchen prepare plans-section --preparation C:/work/preparation.json
+kitchen run plans-section unit-tests
 ```
 
 The operator-owned JSON names exact accepted runtime paths and existing configured
@@ -106,8 +123,8 @@ profiles/check IDs, with the reason for the already-authorized preparation:
 ```json
 {
   "reason": "Previously approved Windows architecture path and offline test dependencies",
-  "files": ["packages/iris-ui/scripts/check-architecture.mjs", "packages/supabase/package.json", "pnpm-lock.yaml"],
-  "setupProfiles": ["supabase-unit"],
+  "files": ["packages/ui/scripts/check-architecture.mjs", "packages/data/package.json", "pnpm-lock.yaml"],
+  "setupProfiles": ["data-unit"],
   "checks": ["k-architecture"]
 }
 ```
@@ -151,9 +168,9 @@ Root `kitchen.config.json` supplies versioned finite profiles for the repository
 }
 ```
 
-Set `stations.<station>.reviewEnabled` to `true` to opt that station into independent model review. All eight stations default to `false`, including when the flag is omitted; the checked-in configuration lists each flag explicitly. A `review` provider/model override selects the reviewer but does not enable review. Enabled stations use their `review` override or fall back to `providers.review`. Human approval, document validation, tests-first history and required executable checks apply regardless of the flag. Explicit `evaluate --live` calibration still runs independently of station opt-ins.
+Set `stations.<station>.reviewEnabled` to `true` to opt that station into independent model review. All eight stations default to `false`, including when the flag is omitted. A `review` provider/model override selects the reviewer but does not enable review. Enabled stations use their `review` override or fall back to `providers.review`. Human approval, document validation, tests-first history and required executable checks apply regardless of the flag. Explicit `evaluate --live` calibration still runs independently of station opt-ins.
 
-Edit the `providers.author.model` and `providers.review.model` fields in root `kitchen.config.json` to select models independently of your global CLI settings. The checked-in configuration makes the existing Codex selection explicit; it does not guarantee that your account/client can use it. Use a model available to your account, then run `pnpm kitchen doctor` to establish access. The doctor and feature stations use the same model settings and request adapter. There is no silent fallback when a selected model is rejected.
+Set `providers.author.model` and `providers.review.model` in root `kitchen.config.json` to select models independently of your global CLI settings, or omit them to inherit CLI defaults. Use a model available to your account, then run `kitchen doctor` to establish access. The doctor and feature stations use the same model settings and request adapter. There is no silent fallback when a selected model is rejected. Doctor requires pnpm only when the project pins it or a configured check/setup/preview uses it; an existing pnpm pin is checked exactly.
 
 For machine-specific settings, create root `kitchen.config.local.json` (Git-ignored). It overrides shared settings, merging provider-role fields and station-role fields while preserving other settings. For example, select the Codex app's bundled CLI without putting a personal path in the shared configuration:
 
@@ -235,7 +252,7 @@ Manual profile observations are passed via `run --observations <json>`:
   {
     "id": "owner-flow",
     "status": "passed",
-    "observation": "Created a completion in local company A; its owner saw exactly one notification.",
+    "observation": "Completed a task in local workspace A; its owner saw exactly one notification.",
     "evidence": ["docs/features/completion-notifications/flow-observation.txt"]
   }
 ]
@@ -248,11 +265,11 @@ Evidence paths must exist in the candidate and be included in approved scope if 
 Each station has a versioned rubric and acceptable/flawed examples under `rubrics/` and `examples/`. The supplied labels are proposals, not claims of human calibration.
 
 ```powershell
-pnpm kitchen evaluate spec
-pnpm kitchen evaluate spec --labels C:/work/spec-labels.json --live
+kitchen evaluate spec
+kitchen evaluate spec --labels C:/work/spec-labels.json --live
 ```
 
-Label JSON maps IDs such as `spec-acceptable` and `spec-flawed` to `acceptable` or `flawed`. Without human labels and explicit `--live`, no hosted model calls or quality measurements run. Evaluation stores missed problems, unnecessary findings, per-case findings, labels and rubric version locally. Add realistic company examples as you discover failures. Review effort is collected with station acceptance.
+Label JSON maps IDs such as `spec-acceptable` and `spec-flawed` to `acceptable` or `flawed`. Without human labels and explicit `--live`, no hosted model calls or quality measurements run. Evaluation stores missed problems, unnecessary findings, per-case findings, labels and rubric version locally. Add realistic project examples as you discover failures. Review effort is collected with station acceptance.
 
 ## Persistence, cancellation and recovery
 
@@ -301,7 +318,7 @@ pnpm exec tsx scripts/benchmark-hashing.ts --files 500 --iterations 3
 pnpm exec tsx scripts/benchmark-intent.ts --baseline-ref HEAD --iterations 3 --offline
 ```
 
-The benchmark scripts still resolve their target as `../../../` from `scripts/`, the layout they had inside the HireBus monorepo (`tools/kitchen/scripts/`). Point that at a target repository before running them from this standalone checkout.
+The benchmark scripts operate on this standalone repository. The intent comparison reads `src/prompts.ts` and `rubrics/intent.md` from the selected baseline commit.
 
 The intent harness uses matched synthetic initial/resume inputs and records the
 actual source guards. `--offline` measures context and local overhead without

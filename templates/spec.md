@@ -4,9 +4,8 @@ intent: ./intent.md
 status: draft            # draft | in-review | approved | superseded
 owner: <name>
 reviewers: [<name>]
-artifact: <packages/artifacts/... path>@<sha>   # or N/A
-last_grounded_against: <develop sha>
-supabase_projects: [core]                       # core | iris
+artifact: <artifact path>@<sha>   # or N/A
+last_grounded_against: <base commit sha>
 ---
 
 # <Title>
@@ -30,19 +29,19 @@ supabase_projects: [core]                       # core | iris
 - **Notifications:** <!-- email / SMS / in-app: who gets it, when, and the copy -->
 
 ## Business rules and edge cases
-<!-- Multi-company users, deleted or archived records, retries/duplicates, time zones, bulk actions, concurrency. -->
+<!-- Users in multiple workspaces, deleted or archived records, retries/duplicates, time zones, bulk actions, concurrency. -->
 -
 
 ## Roles and permissions
 | Role | Can | Cannot |
 |---|---|---|
-| superadmin / owner / member / candidate | | |
+| <project role> | | |
 
 ## Data and integrations
 - **Schema changes:** <!-- tables, columns, migrations, backfill of existing rows -->
-- **Security (RLS) and tenant scope:**
-- **APIs and edge functions:**
-- **Third parties:** <!-- Stripe, email, SMS, job boards, LLM providers: failure modes -->
+- **Security and data access scope:**
+- **APIs and services:**
+- **Third parties:** <!-- applicable integrations and their failure modes -->
 
 ## Billing and entitlements
 <!-- Which plans get it, credit usage, limits, what happens on downgrade or pause. N/A if none. -->

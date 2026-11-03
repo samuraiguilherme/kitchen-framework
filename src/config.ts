@@ -3,6 +3,33 @@ import path from "node:path";
 import type { Config, Profile, RoleConfig } from "./types.ts";
 import { stationOrder } from "./domain.ts";
 
+export function baseBranch(base: string): string {
+  const branch =
+    typeof base === "string"
+      ? base.replace(/^(?:refs\/remotes\/origin\/|refs\/heads\/|origin\/)/, "")
+      : "";
+  if (
+    !branch ||
+    branch === "@" ||
+    branch === "HEAD" ||
+    branch.startsWith("-") ||
+    branch.startsWith("refs/") ||
+    /[\s~^:?*[\\]/.test(branch) ||
+    [...branch].some(
+      (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+    ) ||
+    branch.includes("..") ||
+    branch.includes("@{") ||
+    branch.split("/").some(
+      (part) => !part || part.startsWith(".") || part.endsWith(".") || part.endsWith(".lock"),
+    )
+  )
+    throw new Error(
+      "Base must name a local branch or an origin/<branch> ref (for example origin/main).",
+    );
+  return branch;
+}
+
 export function loadConfig(root: string): Config {
   const read = (name: string): Partial<Config> => {
     const file = path.join(root, name);
@@ -48,10 +75,8 @@ export function loadConfig(root: string): Config {
     }
     config.stations[station] = pair;
   }
-  if (config.version !== 1 || config.base !== "origin/develop")
-    throw new Error(
-      "Supported config version is 1, base must be origin/develop.",
-    );
+  if (config.version !== 1) throw new Error("Supported config version is 1.");
+  baseBranch(config.base);
   const role = (value: RoleConfig) => {
     if (
       !value ||

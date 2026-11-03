@@ -23,13 +23,13 @@ const output = (document: string): AuthorOutput => ({
   document,
   files: [
     {
-      path: "apps/iris-web/src/sort.ts",
+      path: "apps/demo-web/src/sort.ts",
       action: "write",
       kind: "implementation",
       content: "FULL_PROPOSED_SOURCE_MUST_NOT_REPEAT",
     },
   ],
-  allowedPaths: ["apps/iris-web/src/sort.ts"],
+  allowedPaths: ["apps/demo-web/src/sort.ts"],
   unitTestFiles: [],
   scaffoldFiles: [],
   checks: [],
@@ -51,11 +51,10 @@ function fixture() {
   for (const [file, content] of Object.entries({
     "AGENTS.md": "ROOT_REQUIRED_INSTRUCTION",
     "CLAUDE.md": "ROOT_CLAUDE_INSTRUCTION",
-    "tools/context-factory/shared/naming.md": "NAMING_REQUIRED_INSTRUCTION",
-    "apps/iris-web/package.json": '{"name":"@hirebus/iris-web"}',
-    "apps/iris-web/AGENTS.md": "APP_REQUIRED_INSTRUCTION",
-    "apps/iris-web/CLAUDE.md": "APP_CLAUDE_INSTRUCTION",
-    "apps/iris-web/src/sort.ts": "export const order = 'original';\n",
+    "apps/demo-web/package.json": '{"name":"@example/demo-web"}',
+    "apps/demo-web/AGENTS.md": "APP_REQUIRED_INSTRUCTION",
+    "apps/demo-web/CLAUDE.md": "APP_CLAUDE_INSTRUCTION",
+    "apps/demo-web/src/sort.ts": "export const order = 'original';\n",
     "kitchen.config.json": JSON.stringify({
       profiles: { observation: { kind: "manual" } },
     }),
@@ -74,10 +73,10 @@ function fixture() {
   git("commit", "--quiet", "-m", "baseline");
   const state: FeatureState = {
     version: 1,
-    feature: "sort-candidates",
-    request: "Add a column sort button in iris-web.",
+    feature: "sort-items",
+    request: "Add a column sort button in demo-web.",
     worktree: root,
-    branch: "codex/kitchen/sort-candidates",
+    branch: "codex/kitchen/sort-items",
     baseCommit: git("rev-parse", "HEAD"),
     stations: {
       intent: record("STALE_INTENT_OUTPUT"),
@@ -114,12 +113,11 @@ describe("station-specific context", () => {
   it("gives intent target instructions and an edited candidate without implementation context", async () => {
     const { root, state } = fixture();
     delete state.stations.plan;
-    expect(targetPaths(state)).toContain("apps/iris-web/AGENTS.md");
+    expect(targetPaths(state)).toContain("apps/demo-web/AGENTS.md");
     const context = await buildContext(state, "intent", root);
     for (const marker of [
       "ROOT_REQUIRED_INSTRUCTION",
       "ROOT_CLAUDE_INSTRUCTION",
-      "NAMING_REQUIRED_INSTRUCTION",
       "APP_REQUIRED_INSTRUCTION",
       "APP_CLAUDE_INSTRUCTION",
       "DOCUMENT_BODY_intent",
@@ -162,7 +160,7 @@ describe("station-specific context", () => {
     });
     update(featurePlan, "OPERATOR_EDITED_PLAN_BODY\n");
     update(
-      "apps/iris-web/src/sort.ts",
+      "apps/demo-web/src/sort.ts",
       "export const order = 'SOURCE_CHANGE';\n",
     );
     const context = await buildContext(state, "plan", root);

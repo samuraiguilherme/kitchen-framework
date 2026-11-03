@@ -22,7 +22,7 @@ Add focused regression cases as implementation exposes boundary requirements: sc
 
 ## Regression
 
-Run pnpm --filter @hirebus/kitchen test, check:types and lint. Smoke-test pnpm kitchen --help, doctor and evaluate without live calls. Existing application suites are outside this CLI-only change; package profiles select future feature-specific checks.
+Run pnpm test, check:types and lint. Smoke-test kitchen --help, doctor and evaluate without live calls. Existing application suites are outside this CLI-only change; package profiles select future feature-specific checks.
 
 ## Required evidence
 

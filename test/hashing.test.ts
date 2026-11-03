@@ -107,23 +107,23 @@ describe("source hashing boundaries", () => {
     execFileSync("git", ["init", "--quiet"], { cwd: root });
     write(root, "src/tracked.ts", "tracked");
     execFileSync("git", ["add", "src/tracked.ts"], { cwd: root });
-    const original = await sourceFingerprint(root, "sort-candidates");
+    const original = await sourceFingerprint(root, "sort-items");
     write(root, "src/untracked.ts", "untracked");
-    expect(await sourceFiles(root, "sort-candidates")).toEqual(
+    expect(await sourceFiles(root, "sort-items")).toEqual(
       expect.arrayContaining(["src/tracked.ts", "src/untracked.ts"]),
     );
-    const untracked = await sourceFingerprint(root, "sort-candidates");
+    const untracked = await sourceFingerprint(root, "sort-items");
     expect(untracked).not.toBe(original);
     write(root, "src/tracked.ts", "changed");
-    expect(await sourceFingerprint(root, "sort-candidates")).not.toBe(untracked);
+    expect(await sourceFingerprint(root, "sort-items")).not.toBe(untracked);
     rmSync(path.join(root, "src/tracked.ts"));
-    const deleted = await sourceFingerprint(root, "sort-candidates");
+    const deleted = await sourceFingerprint(root, "sort-items");
     write(root, ".kitchen/evidence.json", "runner evidence");
     write(root, ".env.local", "local configuration");
-    write(root, "docs/features/sort-candidates/verification.md", "report");
-    expect(await sourceFingerprint(root, "sort-candidates")).toBe(deleted);
+    write(root, "docs/features/sort-items/verification.md", "report");
+    expect(await sourceFingerprint(root, "sort-items")).toBe(deleted);
     expect(deleted).toBe(
-      legacyDigest(root, await sourceFiles(root, "sort-candidates")),
+      legacyDigest(root, await sourceFiles(root, "sort-items")),
     );
   });
 
@@ -131,26 +131,26 @@ describe("source hashing boundaries", () => {
     const root = fixture();
     execFileSync("git", ["init", "--quiet"], { cwd: root });
     write(root, "src/one.ts", "caf\u00e9");
-    write(root, "docs/features/sort-candidates/intent.md", "initial intent");
-    const initial = await sourceSnapshot(root, "sort-candidates");
+    write(root, "docs/features/sort-items/intent.md", "initial intent");
+    const initial = await sourceSnapshot(root, "sort-items");
     expect(initial.fingerprint).toBe(
-      await sourceFingerprint(root, "sort-candidates"),
+      await sourceFingerprint(root, "sort-items"),
     );
     expect(initial.fingerprint).toBe(
-      legacyDigest(root, await sourceFiles(root, "sort-candidates")),
+      legacyDigest(root, await sourceFiles(root, "sort-items")),
     );
     expect(initial.fileCount).toBe(2);
     expect(initial.byteCount).toBe(Buffer.byteLength("caf\u00e9initial intent"));
-    write(root, "docs/features/sort-candidates/intent.md", "revised intent");
-    const revised = await sourceSnapshot(root, "sort-candidates");
+    write(root, "docs/features/sort-items/intent.md", "revised intent");
+    const revised = await sourceSnapshot(root, "sort-items");
     expect(revised.fingerprint).not.toBe(initial.fingerprint);
     expect(revised.codeFingerprint).toBe(initial.codeFingerprint);
     write(root, "docs/features/another-feature/intent.md", "other feature");
-    const other = await sourceSnapshot(root, "sort-candidates");
+    const other = await sourceSnapshot(root, "sort-items");
     expect(other.codeFingerprint).not.toBe(revised.codeFingerprint);
     write(root, "src/one.ts", "changed");
     expect(
-      (await sourceSnapshot(root, "sort-candidates")).codeFingerprint,
+      (await sourceSnapshot(root, "sort-items")).codeFingerprint,
     ).not.toBe(other.codeFingerprint);
   });
 });

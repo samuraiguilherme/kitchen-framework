@@ -21,7 +21,7 @@ import {
   stationOrder,
   validateFeature,
 } from "./domain.ts";
-import { loadConfig } from "./config.ts";
+import { baseBranch, loadConfig } from "./config.ts";
 import { executeChecks, validateCheckPlan } from "./checks.ts";
 import {
   baselineWorktree,
@@ -1414,11 +1414,13 @@ export class Kitchen {
         }
       }
       const remoteBase = (
-        await git(this.root, "ls-remote", "origin", "refs/heads/develop")
+        await git(
+          this.root, "ls-remote", "origin", `refs/heads/${baseBranch(config.base)}`,
+        )
       ).split(/\s/)[0];
       if (remoteBase !== state.baseCommit)
         throw new Error(
-          "Remote develop changed. Fetch/reconcile and renew verification before publication.",
+          `Remote ${baseBranch(config.base)} changed. Fetch/reconcile and renew verification before publication.`,
         );
     }
   }
@@ -1543,7 +1545,7 @@ export class Kitchen {
         existing ??
         (await this.github.create({
           repository: config.github.repository,
-          base: "develop",
+          base: baseBranch(config.base),
           head: state.branch,
           ...preview,
           bodyFile,

@@ -122,7 +122,7 @@ describe("local, explicit test plans", () => {
     expect(localUrl(url)).toBe(true);
   });
   it.each([
-    "https://app.hirebus.com",
+    "https://app.example.com",
     "http://localhost.evil.test",
     "file:///tmp/a",
     "http://user:pass@localhost",

@@ -2,13 +2,13 @@
 
 ## Summary
 
-Provide a private @hirebus/kitchen workspace and pnpm kitchen CLI. The human accepts every station. The runner owns writes, checks, approvals, commits and publication; hosted providers propose structured artifacts and independently review them.
+Provide a standalone Kitchen package and `kitchen` CLI for Git projects. The human accepts every station. The runner owns writes, checks, approvals, commits and publication; hosted providers propose structured artifacts and independently review them.
 
 ## Requirements and acceptance criteria
 
 | ID   | Requirement              | Acceptance criteria                                                                                                                                                                                                           |
 | ---- | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| AC-1 | Isolate features         | start creates codex/kitchen/<feature> at a recorded origin/develop commit in ignored storage; the original checkout remains unchanged.                                                                                        |
+| AC-1 | Isolate features         | start creates codex/kitchen/<feature> at a recorded configured base commit in ignored storage; the original checkout remains unchanged.                                                                                        |
 | AC-2 | Bound provider execution | Fresh read-only author/review calls validate JSON, capture errors/usage when available, and stop on timeout/cancellation. Models inherit CLI defaults unless configured.                                                      |
 | AC-3 | Human station gates      | intent, spec, plan and test-plan are editable and reviewed. Explicit acceptance binds artifacts and inputs; changed upstream content invalidates dependent approvals. Frontmatter never authorizes advancement.               |
 | AC-4 | Tests before code        | Required unit tests execute at the pinned baseline. New behavior reaches assertion failures; preservation tests may pass. Infrastructure failures/zero tests cannot establish RED. Acceptance preserves a tests-first commit. |

@@ -238,17 +238,18 @@ export function gateReady(
 export function requireAwaitingApproval(
   state: FeatureState,
   station: Station,
+  invocation = "kitchen",
 ): StationRecord {
   const record = state.stations[station];
   if (record?.status === "awaiting-input")
     throw new Error(
-      `${station} is awaiting-input and needs human answers before approval.\nNext: pnpm kitchen run ${state.feature} ${station} --feedback-file <answers.txt>`,
+      `${station} is awaiting-input and needs human answers before approval.\nNext: ${invocation} run ${state.feature} ${station} --feedback-file <answers.txt>`,
     );
   if (!record || record.status !== "awaiting-approval") {
     const command =
       station === "publish"
-        ? `pnpm kitchen publish ${state.feature} --preview`
-        : `pnpm kitchen run ${state.feature} ${station}`;
+        ? `${invocation} publish ${state.feature} --preview`
+        : `${invocation} run ${state.feature} ${station}`;
     throw new Error(
       `${station} is not awaiting approval (status: ${record?.status ?? "not-started"}). Rerun and review it.\nNext: ${command}`,
     );

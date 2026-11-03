@@ -6,7 +6,7 @@
     {
       "id": "publish-acceptable",
       "context": "Verification accepted for candidate def, pinned base base1, intended account chef. Exact title/body/diff have been previewed and accepted.",
-      "candidate": "Runner rechecks source def, origin/develop base1, branch codex/kitchen/notify and gh identity chef. Commit tests-first history preserved. Explicit --repo HireBus/hirebus-v3 --base develop --head codex/kitchen/notify --draft --body-file local/pr-body.md. Query existing open PR first; recover same URL on retry. Preview used no remote writes.",
+      "candidate": "Runner rechecks source def, origin/develop base1, branch codex/kitchen/notify and gh identity chef. Commit tests-first history preserved. Explicit --repo example/project --base develop --head codex/kitchen/notify --draft --body-file local/pr-body.md. Query existing open PR first; recover same URL on retry. Preview used no remote writes.",
       "expected": "acceptable",
       "humanLabel": null
     },

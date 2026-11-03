@@ -17,6 +17,12 @@ function fixture(shared: unknown, local?: unknown) {
 }
 
 describe("machine-local Kitchen configuration", () => {
+  it.each(["origin/main", "origin/release/next", "main", "refs/heads/trunk", "refs/remotes/origin/master"])("accepts a project's base branch: %s", (base) => {
+    expect(loadConfig(fixture({ base })).base).toBe(base);
+  });
+  it.each(["", "HEAD", "origin/HEAD", "--all", "main~1", "origin/../main", "main:other", null, 42])("rejects invalid base branches: %s", (base) => {
+    expect(() => loadConfig(fixture({ base }))).toThrow(/Base must name/);
+  });
   it("requires an explicit review opt-in even when a reviewer is configured", () => {
     const config = loadConfig(
       fixture({ stations: { spec: { review: { provider: "claude" } } } }),
@@ -97,7 +103,7 @@ describe("machine-local Kitchen configuration", () => {
         review: { provider: "claude", model: "review-model" },
         timeoutMs: 12345,
       },
-      github: { repository: "HireBus/hirebus-v3" },
+      github: { repository: "example/project" },
     };
     const root = fixture(shared, {
       providers: { author: { executable: "C:/Codex App/codex.exe" } },

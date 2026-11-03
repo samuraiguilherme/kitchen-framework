@@ -5,26 +5,29 @@ import { createInterface } from "node:readline/promises";
 import { Kitchen } from "./kitchen.ts";
 import { doctor } from "./doctor.ts";
 import { evaluate } from "./evaluate.ts";
-import { execute } from "./process.ts";
+import { initializeProject, projectRoot } from "./project.ts";
 import { requireAwaitingApproval, stationOrder } from "./domain.ts";
 import { featureSummary } from "./console.ts";
 import type { FeatureState, Station } from "./types.ts";
 
 const usage = `Local Development Kitchen
-  pnpm kitchen doctor
-  pnpm kitchen start <feature> --request-file <path> [--issue <url>]
-  pnpm kitchen run <feature> <station> [--feedback-file <path>] [--observations <json>]
-  pnpm kitchen prepare <feature> --preparation <json>
-  pnpm kitchen approve <feature> <station> --actor <name> [--resolutions <json>] [--minutes <n>]
-  pnpm kitchen status <feature>
-  pnpm kitchen report <feature> [--output <path>]
-  pnpm kitchen evaluate <station> [--labels <json>] [--live]
-  pnpm kitchen publish <feature> --preview
-  pnpm kitchen publish <feature>
+  kitchen init [--base <branch>]
+  kitchen doctor
+  kitchen start <feature> --request-file <path> [--issue <url>]
+  kitchen run <feature> <station> [--feedback-file <path>] [--observations <json>]
+  kitchen prepare <feature> --preparation <json>
+  kitchen approve <feature> <station> --actor <name> [--resolutions <json>] [--minutes <n>]
+  kitchen status <feature>
+  kitchen report <feature> [--output <path>]
+  kitchen evaluate <station> [--labels <json>] [--live]
+  kitchen publish <feature> --preview
+  kitchen publish <feature>
 Stations: ${stationOrder.join(", ")}
 Every run pauses for human approval. Model review is opt-in per station.
 Publication requires its own preview and approval.
-Add --json to start, run, approve or status for raw feature state.`;
+Add --cwd <path> to select a project (defaults to the current directory).
+File arguments are resolved relative to that directory.
+Add --json to init, start, run, approve or status for machine-readable output.`;
 async function main(): Promise<void> {
   const { positionals, values } = parseArgs({
     allowPositionals: true,
@@ -33,6 +36,8 @@ async function main(): Promise<void> {
       json: { type: "boolean" },
       preview: { type: "boolean" },
       live: { type: "boolean" },
+      cwd: { type: "string" },
+      base: { type: "string" },
       "request-file": { type: "string" },
       request: { type: "string" },
       issue: { type: "string" },
@@ -51,13 +56,34 @@ async function main(): Promise<void> {
     console.log(usage);
     return;
   }
-  const cwd = process.cwd();
-  const top = await execute("git", ["rev-parse", "--show-toplevel"], cwd);
-  const common = path.resolve(
-    top,
-    await execute("git", ["rev-parse", "--git-common-dir"], top),
-  );
-  const root = path.dirname(common);
+  const [command, feature, selected] = positionals;
+  if (![
+    "init", "doctor", "evaluate", "start", "prepare", "run", "approve",
+    "status", "report", "publish",
+  ].includes(command!))
+    throw new Error("Unknown command.\n" + usage);
+  if (values.base !== undefined && command !== "init")
+    throw new Error(
+      "--base is only supported by kitchen init. Edit kitchen.config.json to change an existing project's base.",
+    );
+  const cwd = path.resolve(values.cwd ?? process.cwd());
+  const quotedCwd = cwd.replaceAll("'", process.platform === "win32" ? "''" : "'\\''");
+  const invocation = values.cwd ? `kitchen --cwd '${quotedCwd}'` : "kitchen";
+  const root = await projectRoot(cwd);
+  if (command === "init") {
+    const result = await initializeProject(root, { base: values.base });
+    console.log(
+      values.json ? JSON.stringify(result, null, 2) : [
+        `Kitchen initialized at ${root}`,
+        `Base: ${result.base}`,
+        ...result.created.map((file) => `Created/updated: ${file}`),
+        ...result.preserved.map((file) => `Preserved: ${file}`),
+        "Configure finite check profiles in kitchen.config.json before the test-plan station.",
+        `Next: ${invocation} doctor`,
+      ].join("\n"),
+    );
+    return;
+  }
   const kitchen = new Kitchen({ root });
   const controller = new AbortController();
   const cancel = () => {
@@ -93,10 +119,9 @@ async function main(): Promise<void> {
     console.log(
       values.json
         ? JSON.stringify(state, null, 2)
-        : featureSummary(state, selected),
+        : featureSummary(state, selected, invocation),
     );
   try {
-    const [command, feature, selected] = positionals;
     if (command === "doctor") {
       const results = await doctor(root, {
         signal: controller.signal,
@@ -188,7 +213,7 @@ async function main(): Promise<void> {
       }
       if (state.stations[chosen]?.status !== "awaiting-approval")
         printFeature(state, chosen);
-      requireAwaitingApproval(state, chosen);
+      requireAwaitingApproval(state, chosen, invocation);
       const actor =
         values.actor ??
         (ask ? await ask("Your name for this acceptance record?") : "");

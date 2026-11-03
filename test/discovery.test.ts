@@ -29,23 +29,23 @@ function fixture() {
     writeFileSync(absolute, content);
   };
   write("AGENTS.md", "Follow the repository conventions.");
-  write("apps/iris-web/package.json", '{"name":"@hirebus/iris-web"}');
-  write("apps/iris-web/AGENTS.md", "Preserve board columns.");
+  write("apps/demo-web/package.json", '{"name":"@example/demo-web"}');
+  write("apps/demo-web/AGENTS.md", "Preserve board columns.");
   write(
-    "apps/iris-web/src/board.ts",
+    "apps/demo-web/src/board.ts",
     "export const columns = [];\n// board implementation\n",
   );
   write(
-    "apps/iris-web/src/board.test.ts",
+    "apps/demo-web/src/board.test.ts",
     "// board test\n// AC-1 preservation\n",
   );
   const config = loadConfig(root);
   const state: FeatureState = {
     version: 1,
-    feature: "sort-candidates",
-    request: "Add a column sort button in iris-web.",
+    feature: "sort-items",
+    request: "Add a column sort button in demo-web.",
     worktree: root,
-    branch: "codex/kitchen/sort-candidates",
+    branch: "codex/kitchen/sort-items",
     baseCommit: "baseline",
     conversation: [],
     stations: {},
@@ -57,8 +57,8 @@ function fixture() {
     evidence: [
       {
         path: request.prompt.includes("(implementation)")
-          ? "apps/iris-web/src/board.ts"
-          : "apps/iris-web/src/board.test.ts",
+          ? "apps/demo-web/src/board.ts"
+          : "apps/demo-web/src/board.test.ts",
         line: 2,
         hash: "",
       },
@@ -158,12 +158,12 @@ describe("read-only repository discovery", () => {
     await discover(setup.options(provider, { codeFingerprint: "code-v2" }));
     expect(calls).toBe(4);
     setup.write(
-      "apps/iris-web/src/board.ts",
+      "apps/demo-web/src/board.ts",
       "export const columns = ['changed'];\n// modified implementation\n",
     );
     await discover(setup.options(provider, { codeFingerprint: "code-v2" }));
     expect(calls).toBe(6);
-    setup.write("apps/iris-web/AGENTS.md", "Changed target instructions.");
+    setup.write("apps/demo-web/AGENTS.md", "Changed target instructions.");
     await discover(setup.options(provider, { codeFingerprint: "code-v2" }));
     expect(calls).toBe(8);
   });
@@ -172,8 +172,8 @@ describe("read-only repository discovery", () => {
     { path: "../outside.ts", line: 1 },
     { path: ".env", line: 1 },
     { path: "missing.ts", line: 1 },
-    { path: "apps/iris-web/src/board.ts", line: 0 },
-    { path: "apps/iris-web/src/board.ts", line: 99 },
+    { path: "apps/demo-web/src/board.ts", line: 0 },
+    { path: "apps/demo-web/src/board.ts", line: 99 },
   ])(
     "rejects invalid source evidence $path:$line without caching it",
     async (citation) => {
@@ -186,7 +186,7 @@ describe("read-only repository discovery", () => {
       await expect(discover(setup.options(provider))).rejects.toThrow();
       expect(
         existsSync(
-          path.join(setup.root, ".kitchen/features/sort-candidates/discovery"),
+          path.join(setup.root, ".kitchen/features/sort-items/discovery"),
         ),
       ).toBe(false);
     },
@@ -195,20 +195,20 @@ describe("read-only repository discovery", () => {
   it("rejects structured file proposals instead of accepting discovery as a writing agent", async () => {
     const setup = fixture();
     const source = readFileSync(
-      path.join(setup.root, "apps/iris-web/src/board.ts"),
+      path.join(setup.root, "apps/demo-web/src/board.ts"),
       "utf8",
     );
     const provider: Provider = async (request) => ({
       ...setup.output(request),
       files: [
-        { path: "apps/iris-web/src/board.ts", content: "replace source" },
+        { path: "apps/demo-web/src/board.ts", content: "replace source" },
       ],
     });
     await expect(discover(setup.options(provider))).rejects.toThrow(
       /Invalid discovery output/,
     );
     expect(
-      readFileSync(path.join(setup.root, "apps/iris-web/src/board.ts"), "utf8"),
+      readFileSync(path.join(setup.root, "apps/demo-web/src/board.ts"), "utf8"),
     ).toBe(source);
   });
 
@@ -235,7 +235,7 @@ describe("read-only repository discovery", () => {
     expect(calls.every((request) => request.signal!.aborted)).toBe(true);
     expect(
       existsSync(
-        path.join(setup.root, ".kitchen/features/sort-candidates/discovery"),
+        path.join(setup.root, ".kitchen/features/sort-items/discovery"),
       ),
     ).toBe(false);
   });

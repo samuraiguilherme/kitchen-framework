@@ -13,7 +13,7 @@ import {
 } from "../src/domain.ts";
 
 describe("feature and file boundaries", () => {
-  it.each(["candidate-invitations", "1625-crm-companies"])(
+  it.each(["team-invitations", "1625-workspace-settings"])(
     "accepts %s",
     (feature) => {
       expect(validateFeature(feature)).toBe(feature);

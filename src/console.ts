@@ -5,6 +5,7 @@ import type { FeatureState, Station } from "./types.ts";
 export function featureSummary(
   state: FeatureState,
   selected?: Station,
+  invocation = "kitchen",
 ): string {
   const lines = [
     `Feature: ${state.feature}`,
@@ -59,7 +60,7 @@ export function featureSummary(
     lines.push(
       "",
       "Correct the recorded preparation failure before authoring.",
-      `Next: pnpm kitchen prepare ${state.feature} --preparation <json>`,
+      `Next: ${invocation} prepare ${state.feature} --preparation <json>`,
     );
     return lines.join("\n");
   }
@@ -70,12 +71,12 @@ export function featureSummary(
     const record = state.stations[next];
     const run =
       next === "publish"
-        ? `pnpm kitchen publish ${state.feature} --preview`
-        : `pnpm kitchen run ${state.feature} ${next}`;
+        ? `${invocation} publish ${state.feature} --preview`
+        : `${invocation} run ${state.feature} ${next}`;
     let command = run;
     if (record?.status === "awaiting-approval") {
       if (gateReady(record.findings, record.checks, {}))
-        command = `pnpm kitchen approve ${state.feature} ${next} --actor <your-name>`;
+        command = `${invocation} approve ${state.feature} ${next} --actor <your-name>`;
       else
         lines.push(
           "",
@@ -88,6 +89,6 @@ export function featureSummary(
       );
     lines.push("", `Next: ${command}`);
   } else if (state.stations.publish?.status === "approved")
-    lines.push("", `Next: pnpm kitchen publish ${state.feature}`);
+    lines.push("", `Next: ${invocation} publish ${state.feature}`);
   return lines.join("\n");
 }

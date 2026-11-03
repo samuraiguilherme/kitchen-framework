@@ -5,14 +5,14 @@
   "examples": [
     {
       "id": "unit-tests-acceptable",
-      "context": "AC-1 sends exactly once for duplicate events; AC-2 company B owners excluded. Approved repository interface exposes insertIfAbsent and listActiveOwners(companyId).",
-      "candidate": "it('AC-1 duplicate event inserts once', async () => { const repo = inMemoryRepository({A: ['owner-A']}); await complete(eventA, repo); await complete(eventA, repo); expect(repo.rows()).toEqual([{companyId:'A', applicationId:'app-1', ownerId:'owner-A'}]); });\nit('AC-2 keeps company B owners out', async () => { const repo = inMemoryRepository({A:['owner-A'], B:['owner-B']}); await complete(eventA, repo); expect(repo.rows().map(r=>r.ownerId)).toEqual(['owner-A']); });\nRunner baseline: 2 executed; both assertion failures; no import/config/runtime errors; pinned base recorded.",
+      "context": "AC-1 sends exactly once for duplicate events; AC-2 workspace B owners excluded. Approved repository interface exposes insertIfAbsent and listActiveOwners(workspaceId).",
+      "candidate": "it('AC-1 duplicate event inserts once', async () => { const repo = inMemoryRepository({A: ['owner-A']}); await complete(eventA, repo); await complete(eventA, repo); expect(repo.rows()).toEqual([{workspaceId:'A', taskId:'task-1', ownerId:'owner-A'}]); });\nit('AC-2 keeps workspace B owners out', async () => { const repo = inMemoryRepository({A:['owner-A'], B:['owner-B']}); await complete(eventA, repo); expect(repo.rows().map(r=>r.ownerId)).toEqual(['owner-A']); });\nRunner baseline: 2 executed; both assertion failures; no import/config/runtime errors; pinned base recorded.",
       "expected": "acceptable",
       "humanLabel": null
     },
     {
       "id": "unit-tests-flawed",
-      "context": "AC-1 sends exactly once for duplicate events; AC-2 company B owners excluded. Approved repository interface exposes insertIfAbsent and listActiveOwners(companyId).",
+      "context": "AC-1 sends exactly once for duplicate events; AC-2 workspace B owners excluded. Approved repository interface exposes insertIfAbsent and listActiveOwners(workspaceId).",
       "candidate": "it('AC-1 works', () => { const complete = vi.fn().mockReturnValue(true); expect(complete()).toBe(true); });\nit.skip('AC-2 tenant boundary', () => {});\nRunner: 1 pass, 1 skipped. Claim: expected RED.",
       "expected": "flawed",
       "humanLabel": null

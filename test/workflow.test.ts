@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Kitchen } from "../src/kitchen.ts";
 import { stationOrder } from "../src/domain.ts";
-import type { Config } from "../src/types.ts";
+import type { Config, PrInput } from "../src/types.ts";
 
 const documents: Record<string, string> = {
   intent:
@@ -91,9 +91,9 @@ describe("station latency safeguards", () => {
 
   it("binds intent approval to the target instructions that supplied its context", async () => {
     const setup = fixture();
-    mkdirSync(path.join(setup.root, "apps/iris-web"), { recursive: true });
+    mkdirSync(path.join(setup.root, "apps/demo-web"), { recursive: true });
     writeFileSync(
-      path.join(setup.root, "apps/iris-web/AGENTS.md"),
+      path.join(setup.root, "apps/demo-web/AGENTS.md"),
       "Use the existing board.\n",
     );
     git(setup.root, "add", "apps");
@@ -105,14 +105,14 @@ describe("station latency safeguards", () => {
       git(setup.root, "rev-parse", "HEAD"),
     );
     await setup.kitchen.start("answer", {
-      request: "Add a button in apps/iris-web.",
+      request: "Add a button in apps/demo-web.",
     });
     await setup.kitchen.run("answer", "intent");
     const approved = await setup.kitchen.approve("answer", "intent", {
       actor: "chef",
     });
     writeFileSync(
-      path.join(approved.worktree, "apps/iris-web/AGENTS.md"),
+      path.join(approved.worktree, "apps/demo-web/AGENTS.md"),
       "Changed board conventions.\n",
     );
     expect((await setup.kitchen.status("answer")).stations.intent?.status).toBe(
@@ -176,7 +176,7 @@ function git(root: string, ...args: string[]) {
   }).trim();
 }
 
-function fixture(baselineAnswer = 0, stations: Config["stations"] = {}) {
+function fixture(baselineAnswer = 0, stations: Config["stations"] = {}, baseBranch = "develop") {
   const root = mkdtempSync(path.join(tmpdir(), "kitchen-workflow-"));
   mkdirSync(path.join(root, "src"));
   writeFileSync(path.join(root, ".gitignore"), ".kitchen/\nnode_modules/\n");
@@ -194,7 +194,8 @@ process.exitCode=passed?0:1;`,
   writeFileSync(
     path.join(root, "kitchen.config.json"),
     JSON.stringify({
-      github: { repository: "HireBus/hirebus-v3", account: "chef" },
+      base: `origin/${baseBranch}`,
+      github: { repository: "example/project", account: "chef" },
       stations,
       profiles: {
         unit: {
@@ -208,23 +209,23 @@ process.exitCode=passed?0:1;`,
       },
     }),
   );
-  git(root, "init", "--initial-branch=develop");
+  git(root, "init", `--initial-branch=${baseBranch}`);
   git(root, "config", "user.name", "Kitchen Test");
   git(root, "config", "user.email", "kitchen@example.test");
   git(root, "config", "core.autocrlf", "false");
   git(root, "add", ".");
   git(root, "commit", "-m", "baseline");
   const base = git(root, "rev-parse", "HEAD");
-  git(root, "update-ref", "refs/remotes/origin/develop", base);
+  git(root, "update-ref", `refs/remotes/origin/${baseBranch}`, base);
   const remote = path.join(
     mkdtempSync(path.join(tmpdir(), "kitchen-remote-")),
-    "HireBus",
-    "hirebus-v3.git",
+    "example",
+    "project.git",
   );
   mkdirSync(path.dirname(remote), { recursive: true });
   git(root, "init", "--bare", remote);
   git(root, "remote", "add", "origin", remote);
-  git(root, "push", "origin", "develop");
+  git(root, "push", "origin", baseBranch);
   const calls: Array<{ station: string; role: string; prompt: string }> = [];
   const provider = async (request: {
     station: string;
@@ -277,16 +278,18 @@ process.exitCode=passed?0:1;`,
   };
   let created = 0;
   let pushed = 0;
+  const publications: PrInput[] = [];
   const gateway = {
     identity: async () => "chef",
     find: async () =>
-      created > 0 ? "https://github.com/HireBus/hirebus-v3/pull/123" : null,
+      created > 0 ? "https://github.com/example/project/pull/123" : null,
     push: async () => {
       pushed++;
     },
-    create: async () => {
+    create: async (input: PrInput) => {
       created++;
-      return "https://github.com/HireBus/hirebus-v3/pull/123";
+      publications.push(input);
+      return "https://github.com/example/project/pull/123";
     },
   };
   const kitchen = new Kitchen({ root, provider, github: gateway });
@@ -298,6 +301,7 @@ process.exitCode=passed?0:1;`,
     provider,
     calls,
     gateway,
+    publications,
     counts: () => ({ created, pushed }),
   };
 }
@@ -1145,9 +1149,9 @@ describe("station workflow", () => {
       "awaiting-approval",
     );
   });
-  it.each([undefined, false, true])(
-    "requires GREEN and human approval with reviewEnabled=%s at every station",
-    async (reviewEnabled) => {
+  it.each([[undefined, "develop"], [false, "main"], [true, "release/next"]] as const)(
+    "requires GREEN and human approval with reviewEnabled=%s on %s",
+    async (reviewEnabled, baseBranch) => {
       const setup = fixture(
         0,
         Object.fromEntries(
@@ -1159,6 +1163,7 @@ describe("station workflow", () => {
             },
           ]),
         ),
+        baseBranch,
       );
       await acceptDocs(setup.kitchen);
       for (const station of [
@@ -1197,12 +1202,20 @@ describe("station workflow", () => {
         /approve publish/,
       );
       await setup.kitchen.approve("answer", "publish", { actor: "chef" });
+      if (baseBranch === "main") {
+        const remoteCommit = git(setup.remote, "-c", "user.name=Test", "-c", "user.email=test@example.test", "commit-tree", `${setup.base}^{tree}`, "-p", setup.base, "-m", "remote base changed");
+        git(setup.remote, "update-ref", "refs/heads/main", remoteCommit);
+        await expect(setup.kitchen.publish("answer")).rejects.toThrow(/Remote main changed/);
+        expect(setup.counts()).toEqual({ created: 0, pushed: 0 });
+        git(setup.remote, "update-ref", "refs/heads/main", setup.base);
+      }
       const published = await setup.kitchen.publish("answer");
       expect(published.url).toBe(
-        "https://github.com/HireBus/hirebus-v3/pull/123",
+        "https://github.com/example/project/pull/123",
       );
       await setup.kitchen.publish("answer");
       expect(setup.counts().created).toBe(1);
+      expect(setup.publications[0]?.base).toBe(baseBranch);
     },
   );
   it("recovers failed publish reviews and preserves blocking findings without remote writes", async () => {
@@ -1380,7 +1393,7 @@ describe("station workflow", () => {
     const gateway = {
       ...setup.gateway,
       find: async () =>
-        created ? "https://github.com/HireBus/hirebus-v3/pull/456" : null,
+        created ? "https://github.com/example/project/pull/456" : null,
       create: async () => {
         created++;
         throw new Error("connection lost after creation");
@@ -1453,7 +1466,7 @@ describe("station workflow", () => {
       "set-url",
       "--push",
       "origin",
-      "https://example.invalid/HireBus/hirebus-v3.git",
+      "https://example.invalid/example/project.git",
     );
     await setup.kitchen.publish("answer", { preview: true });
     await setup.kitchen.approve("answer", "publish", { actor: "chef" });

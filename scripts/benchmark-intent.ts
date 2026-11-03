@@ -48,7 +48,7 @@ if (values.live && values.offline)
   throw new Error("Select --live or --offline, not both.");
 if (!Number.isSafeInteger(iterations) || iterations < 1 || iterations > 10)
   throw new Error("--iterations must be an integer between 1 and 10.");
-const root = fileURLToPath(new URL("../../../", import.meta.url));
+const root = fileURLToPath(new URL("../", import.meta.url));
 const id = randomUUID();
 const outputDirectory = path.resolve(
   root,
@@ -64,11 +64,11 @@ const baselineRef = await git(
   `${values["baseline-ref"]}^{commit}`,
 );
 const baseCommit = await git(root, "rev-parse", "HEAD");
-const request = "add sort button candidates board iris-web";
+const request = "Add a sort button to the item board.";
 const feedback =
   "Names A-Z/Z-A, loaded cards only, per-column, local until reload";
 const question =
-  "Which candidate field and directions should be sorted, over which cards and columns, and should sorting persist?";
+  "Which item field and directions should be sorted, over which cards and columns, and should sorting persist?";
 const startedAt = new Date().toISOString();
 const workload = {
   id,
@@ -308,7 +308,7 @@ async function baselineBuilder(): Promise<PromptBuilder> {
   const source = await git(
     root,
     "show",
-    `${baselineRef}:tools/kitchen/src/prompts.ts`,
+    `${baselineRef}:src/prompts.ts`,
   );
   writeFileSync(path.join(directory, "prompts-source.ts"), source);
   const transpiled = ts.transpileModule(source, {
@@ -321,7 +321,7 @@ async function baselineBuilder(): Promise<PromptBuilder> {
   writeFileSync(modulePath, transpiled.outputText);
   writeFileSync(
     path.join(directory, "rubrics/intent.md"),
-    await git(root, "show", `${baselineRef}:tools/kitchen/rubrics/intent.md`),
+    await git(root, "show", `${baselineRef}:rubrics/intent.md`),
   );
   return (await import(pathToFileURL(modulePath).href)) as PromptBuilder;
 }

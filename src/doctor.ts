@@ -19,7 +19,7 @@ export async function doctor(
   results.push({
     id: "node-22",
     required: true,
-    status: process.versions.node.split(".")[0] === "22" ? "passed" : "failed",
+    status: Number(process.versions.node.split(".")[0]) >= 22 ? "passed" : "failed",
     reason: process.versions.node,
   });
   const config = loadConfig(root);
@@ -54,14 +54,26 @@ export async function doctor(
       );
   }
   const packageFile = path.join(root, "package.json");
-  const pinned = existsSync(packageFile)
-    ? JSON.parse(readFileSync(packageFile, "utf8")).packageManager?.replace(
-        /^pnpm@/,
-        "",
-      )
+  const packageManager = existsSync(packageFile)
+    ? JSON.parse(readFileSync(packageFile, "utf8")).packageManager
     : undefined;
+  const pinned =
+    typeof packageManager === "string" && packageManager.startsWith("pnpm@")
+      ? packageManager.slice(5).split("+")[0]
+      : undefined;
+  const needsPnpm =
+    pinned !== undefined || Object.values(config.profiles).some((profile) =>
+      [
+        profile.command,
+        profile.setup?.command,
+        profile.preview?.command,
+        profile.preview?.build.command,
+      ].includes("pnpm"),
+    );
   const checks = [
-    { id: "pnpm", command: "pnpm", args: ["--version"], required: true },
+    ...(needsPnpm
+      ? [{ id: "pnpm", command: "pnpm", args: ["--version"], required: true }]
+      : []),
     { id: "git", command: "git", args: ["--version"], required: true },
     {
       id: "base",
@@ -125,7 +137,8 @@ export async function doctor(
       });
       const failed =
         result.code !== 0 ||
-        (check.id === "pnpm" && result.stdout.trim() !== pinned);
+        (check.id === "pnpm" &&
+          pinned !== undefined && result.stdout.trim() !== pinned);
       let reason = failed
         ? result.timedOut
           ? "Timed out; inspect CLI availability/authentication."
@@ -221,7 +234,7 @@ export async function doctor(
     status: Object.keys(config.profiles).length ? "passed" : "unverified",
     reason:
       Object.keys(config.profiles).join(", ") ||
-      "Copy/configure kitchen.config.example.json; profiles are required before the test plan.",
+      "Run kitchen init, then configure project-specific check profiles in kitchen.config.json before the test plan.",
   });
   return results;
 }

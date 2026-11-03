@@ -2,22 +2,22 @@
 
 ## Description
 
-Add the runner under tools/kitchen, using the existing intent/spec/plan templates and a separate test-plan.md. Build station contracts around deterministic state transitions, exact scope, content fingerprints and a small provider/GitHub boundary. Preserve tests before implementation in Git.
+Maintain the runner as a standalone CLI, using the intent/spec/plan templates and a separate test-plan.md. Build station contracts around deterministic state transitions, exact scope, content fingerprints and a small provider/GitHub boundary. Preserve tests before implementation in Git.
 
 ## Files to change
 
-| Path                                                                        | Purpose                                                                                  |
-| --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| tools/kitchen/package.json, tsconfig.json, vitest.config.ts                 | private TypeScript workspace and checks                                                  |
-| tools/kitchen/src/{cli,config,doctor,types}.ts                              | commands, runtime configuration and diagnostics                                          |
-| tools/kitchen/src/{domain,storage,git,kitchen}.ts                           | paths, fingerprints, recovery, worktrees, station gates and publication                  |
-| tools/kitchen/src/{process,providers,checks,github}.ts                      | finite subprocesses, hosted structured output, executable evidence and draft PR boundary |
-| tools/kitchen/src/{prompts,evaluate}.ts                                     | station context, rubrics and human-labeled evaluation                                    |
-| tools/kitchen/test/\*.test.ts                                               | deterministic contract and workflow fixtures                                             |
-| tools/kitchen/{rubrics,examples}/\*                                         | per-station acceptance rules and calibration cases                                       |
-| tools/kitchen/README.md, kitchen.config.json                                | local setup and versioned package profiles                                               |
-| docs/features/kitchen-framework/\*.md, docs/\_templates/{plan,test-plan}.md | feature contract, separate test plan and factual verification                            |
-| package.json, pnpm-workspace.yaml, pnpm-lock.yaml, .gitignore               | workspace registration and ignored runtime storage                                       |
+| Path                                          | Purpose                                                                                 |
+| --------------------------------------------- | --------------------------------------------------------------------------------------- |
+| package.json, tsconfig.json, vitest.config.ts   | standalone TypeScript package and checks                                                |
+| src/{cli,config,doctor,types}.ts                | commands, runtime configuration and diagnostics                                         |
+| src/{domain,storage,git,kitchen}.ts             | paths, fingerprints, recovery, worktrees, station gates and publication                   |
+| src/{process,providers,checks,github}.ts        | finite subprocesses, hosted structured output, executable evidence and draft PR boundary |
+| src/{prompts,evaluate}.ts                      | station context, rubrics and human-labeled evaluation                                    |
+| test/\*.test.ts                                | deterministic contract and workflow fixtures                                            |
+| {rubrics,examples}/\*                          | per-station acceptance rules and calibration cases                                      |
+| README.md, kitchen.config.example.json         | local setup and versioned check profile examples                                        |
+| docs/design/\*.md, templates/{plan,test-plan}.md | framework contract, separate test plan and factual verification                          |
+| pnpm-lock.yaml, .gitignore                     | pinned dependencies and ignored runtime storage                                         |
 
 ## Steps to implement
 
@@ -51,4 +51,4 @@ See [test-plan.md](./test-plan.md) for acceptance coverage, baseline failure exp
 
 ## Rollout
 
-Use locally with human acceptance at every station. Label company examples and record review minutes before granting more autonomy. This request defers the real framework PR; keep local commits ready for later publication.
+Use locally with human acceptance at every station. Label project examples and record review minutes before granting more autonomy. This request defers the real framework PR; keep local commits ready for later publication.

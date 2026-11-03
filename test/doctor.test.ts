@@ -78,6 +78,17 @@ beforeEach(() => {
 afterEach(() => vi.resetAllMocks());
 
 describe("live model readiness diagnostics", () => {
+  it("does not require pnpm in a project using another runtime", async () => {
+    writeFileSync(path.join(root, "package.json"), JSON.stringify({ packageManager: "npm@10.0.0" }));
+    const results = await doctor(root);
+    expect(results.some((result) => result.id === "pnpm")).toBe(false);
+    expect(run.mock.calls.some(([options]) => options.command === "pnpm")).toBe(false);
+  });
+  it("checks pnpm availability without requiring a nonexistent version pin", async () => {
+    writeFileSync(path.join(root, "package.json"), "{}");
+    config({ profiles: { types: { kind: "command", command: "pnpm", args: ["check"], parser: "exit-code", timeoutMs: 1000 } } });
+    expect((await doctor(root)).find((result) => result.id === "pnpm")?.status).toBe("passed");
+  });
   it("checks and probes the replacement desktop runtime without rewriting config", async () => {
     const bin = path.join(root, "OpenAI", "Codex", "bin");
     const missing = path.join(bin, "0000000000000000", "codex.exe");

@@ -9,24 +9,24 @@ decide_by: YYYY-MM-DD
 created: YYYY-MM-DD
 ---
 
-# <Outcome in plain words, e.g. "Owners know when a candidate finishes an application">
+# <Outcome in plain words, e.g. "Users know when a task finishes">
 
 ## What the product can't do today
 <!-- The gap, not the solution. 1–3 sentences. -->
 
 **Evidence**
-<!-- Links + dates: support tickets, analysis output (churn-signal, 30-day-report), sales calls, metrics. -->
+<!-- Links + dates: support tickets, research, user feedback, metrics. -->
 -
 
 ## Who is affected
 | Who | How it hurts today | Reach |
 |---|---|---|
-| <!-- e.g. company owners on paid plans --> | | <!-- # companies, % of MRR, # candidates --> |
+| <!-- e.g. workspace administrators --> | | <!-- # users or affected workspaces --> |
 | <!-- internal: CS, sales, ops --> | | |
 
 ## What better looks like
 - **Outcome:** <!-- what the user can do or notices afterwards -->
-- **Success metric:** <!-- KPI from docs/metrics/kpis.md --> baseline `__` → target `__` by `YYYY-MM-DD`
+- **Success metric:** <!-- relevant project metric --> baseline `__` → target `__` by `YYYY-MM-DD`
 - **Business impact:** <!-- revenue, retention, conversion, support load, cost, risk -->
 - **Cost of doing nothing:**
 
