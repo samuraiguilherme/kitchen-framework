@@ -4,10 +4,18 @@ A local Node 22 / TypeScript runner for a human-approved feature workflow. Codex
 
 ## Start locally
 
-Use the repository's pinned pnpm 9.15.9. No database, queue, Docker service or daemon is required for the runner.
+Use pnpm 9.15.9 (pinned in `package.json`) and Node 22. No database, queue, Docker service or daemon is required for the runner.
+
+Install this repository once and expose the `kitchen` command:
 
 ```powershell
-pnpm install --filter @hirebus/kitchen --ignore-scripts
+pnpm install --ignore-scripts
+pnpm link --global
+```
+
+Then run it from inside the target repository. The command examples below use `pnpm kitchen`, matching the CLI's own hints; with the global link, type `kitchen` instead, or add `"kitchen": "kitchen"` to the target repository's `package.json` scripts. The target needs a root `kitchen.config.json` (start from `kitchen.config.example.json`) and, optionally, station templates in `docs/_templates/` (starters in `templates/`).
+
+```powershell
 pnpm kitchen doctor
 pnpm kitchen start completion-notifications --request-file C:/work/request.txt
 pnpm kitchen run completion-notifications intent
@@ -20,7 +28,7 @@ Doctor checks the CLI executables and logins used by station authors and enabled
 
 Model checks identify the configured model and roles. When `model` is omitted, they say `CLI default (inherited)` and test that choice without adding an override. Probes run in separate scratch directories without the feature request or repository instructions. Raw evidence is retained under `.kitchen/doctor/<run-id>/`. Doctor does not rerun a feature station.
 
-Run from the monorepo or a kitchen worktree: the CLI resolves the common repository root. `origin/develop` must exist locally. Start pins that ref without fetching or changing your working checkout. Publication compares it with the remote develop branch again.
+Run from the target repository or a kitchen worktree: the CLI resolves the common repository root. `origin/develop` must exist locally. Start pins that ref without fetching or changing your working checkout. Publication compares it with the remote develop branch again.
 
 ## Work through each station
 
@@ -289,9 +297,11 @@ and defaults to disabled until matched measurements establish a net improvement.
 Reproduce the bounded hashing comparison without provider calls:
 
 ```powershell
-pnpm --filter @hirebus/kitchen exec tsx scripts/benchmark-hashing.ts --files 500 --iterations 3
-pnpm --filter @hirebus/kitchen exec tsx scripts/benchmark-intent.ts --baseline-ref HEAD --iterations 3 --offline
+pnpm exec tsx scripts/benchmark-hashing.ts --files 500 --iterations 3
+pnpm exec tsx scripts/benchmark-intent.ts --baseline-ref HEAD --iterations 3 --offline
 ```
+
+The benchmark scripts still resolve their target as `../../../` from `scripts/`, the layout they had inside the HireBus monorepo (`tools/kitchen/scripts/`). Point that at a target repository before running them from this standalone checkout.
 
 The intent harness uses matched synthetic initial/resume inputs and records the
 actual source guards. `--offline` measures context and local overhead without
@@ -357,10 +367,12 @@ Publication rechecks source, accepted tests, branch, local/remote base, every or
 ## Validate the framework
 
 ```powershell
-pnpm --filter @hirebus/kitchen test
-pnpm --filter @hirebus/kitchen check:types
-pnpm --filter @hirebus/kitchen lint
+pnpm test
+pnpm check:types
+pnpm lint
 ```
+
+The framework's own intent, spec, plan, test plan and verification record are in `docs/design/`.
 
 Tests use temporary Git repositories, fake provider executables, fake GitHub writes and a local preview server. No paid hosted model calls or real PRs run in the test suite. Hosted availability checks run when you invoke `doctor`; live verifier calibration requires `evaluate --live`. Model quality remains to be calibrated by you.
 
