@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { assetsRoot, rubric } from "./prompts.ts";
-import { hostedProvider, validateReviewOutput } from "./providers.ts";
+import { cliProvider, validateReviewOutput } from "./providers.ts";
 import { loadConfig } from "./config.ts";
 import type { Provider, Station } from "./types.ts";
 
@@ -54,7 +54,7 @@ export async function evaluate(
   const results = [];
   for (const example of cases) {
     const output = validateReviewOutput(
-      await (options.provider ?? hostedProvider)({
+      await (options.provider ?? cliProvider)({
         station,
         role: "review",
         cwd: root,

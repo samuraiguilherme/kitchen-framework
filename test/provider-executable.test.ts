@@ -21,6 +21,14 @@ function fixture() {
 }
 
 describe("Codex desktop executable resolution", () => {
+  it("resolves a platform npx launcher for DeepSeek and preserves explicit paths", () => {
+    expect(resolveProviderExecutable("deepseek")).toBe(
+      process.platform === "win32" ? "npx.cmd" : "npx",
+    );
+    expect(
+      resolveProviderExecutable("deepseek", "C:/Custom Runtime/npx.cmd"),
+    ).toBe("C:/Custom Runtime/npx.cmd");
+  });
   it("uses the app runtime on PATH after the configured runtime is removed", () => {
     const { bin, missing, runtime } = fixture();
     const active = runtime("1111111111111111", 1000);

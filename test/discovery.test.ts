@@ -85,6 +85,37 @@ afterEach(() => {
 });
 
 describe("read-only repository discovery", () => {
+  it("serializes local DeepSeek discovery and stops before the second task on failure", async () => {
+    const setup = fixture();
+    setup.config.providers.author = { provider: "deepseek", model: "local" };
+    let active = 0;
+    let maximum = 0;
+    let calls = 0;
+    const provider: Provider = async (request) => {
+      calls++;
+      active++;
+      maximum = Math.max(maximum, active);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      active--;
+      return setup.output(request);
+    };
+    await discover(setup.options(provider));
+    expect(maximum).toBe(1);
+    expect(calls).toBe(2);
+    calls = 0;
+    await expect(
+      discover(
+        setup.options(
+          async () => {
+            calls++;
+            throw new Error("local model failed");
+          },
+          { codeFingerprint: "different" },
+        ),
+      ),
+    ).rejects.toThrow("local model failed");
+    expect(calls).toBe(1);
+  });
   it("invalidates runtime profile changes and honors cancellation even on a cache hit", async () => {
     const setup = fixture();
     let calls = 0;

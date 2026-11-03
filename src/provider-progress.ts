@@ -2,12 +2,13 @@ import { appendFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import type { ProviderMetrics, ProviderRequest } from "./types.ts";
+import { deepseekEventFailure } from "./deepseek.ts";
 
 // Restrict fail-fast to known sandbox setup failures, not ordinary tool exits or prose.
 const sandboxFailure =
   /(?:Failed to create unified exec process:.*setup refresh had errors|(?:exec_command|windows_sandbox).*setup refresh had errors)/i;
 
-export function providerProgress(request: ProviderRequest) {
+export function providerProgress(request: ProviderRequest, probe = false) {
   const files = {
     stdout: path.join(request.runDir, `${request.role}-events.jsonl`),
     stderr: path.join(request.runDir, `${request.role}-stderr.log`),
@@ -23,6 +24,8 @@ export function providerProgress(request: ProviderRequest) {
   const started = performance.now();
   const metrics: ProviderMetrics = { durationMs: 0, toolCount: 0 };
   const tools = new Set<string>();
+  let deepseekSteps = 0;
+  let incompleteUsage = false;
   const report = (message: string) =>
     request.onProgress?.(
       // Strip terminal controls from provider-supplied progress text.
@@ -33,9 +36,9 @@ export function providerProgress(request: ProviderRequest) {
     stream: "stdout" | "stderr",
     raw: string,
   ): string | undefined => {
-    if (request.config.provider !== "codex") return;
+    if (request.config.provider === "claude") return;
     if (stream === "stderr") {
-      if (sandboxFailure.test(raw))
+      if (request.config.provider === "codex" && sandboxFailure.test(raw))
         return `Windows sandbox infrastructure failure: ${raw.trim().slice(-1500)}`;
       return;
     }
@@ -43,8 +46,14 @@ export function providerProgress(request: ProviderRequest) {
     try {
       event = JSON.parse(raw);
     } catch {
+      if (request.config.provider === "deepseek" && raw.trim())
+        return "Invalid JSON in DSH event stream.";
       return;
     }
+    if (!event || typeof event !== "object" || Array.isArray(event))
+      return request.config.provider === "deepseek"
+        ? "Invalid DSH stream event."
+        : undefined;
     const item = event?.item;
     const elapsedMs = performance.now() - started;
     metrics.firstEventMs ??= elapsedMs;
@@ -57,6 +66,40 @@ export function providerProgress(request: ProviderRequest) {
         itemId: item?.id,
       }) + "\n",
     );
+    if (request.config.provider === "deepseek") {
+      const failure = deepseekEventFailure(event, probe);
+      if (failure) return failure;
+      if (event.type === "tool_call") {
+        metrics.firstToolMs ??= elapsedMs;
+        tools.add(event.callId);
+        metrics.toolCount = tools.size;
+        report(`tool started: ${event.tool}`);
+      } else if (event.type === "tool_result")
+        report(`tool ${event.status}: ${event.callId}`);
+      else if (event.type === "session" || event.type === "final")
+        report(`dsh ${event.type}: ${event.sessionId}`);
+      if (event.type === "status" && event.phase === "step_end") {
+        deepseekSteps++;
+        if (!event.usage || typeof event.usage !== "object") {
+          incompleteUsage = true;
+          delete metrics.usage;
+        } else if (!incompleteUsage) {
+          const usage = Object.fromEntries(
+            Object.entries(event.usage).filter(
+              (entry): entry is [string, number] =>
+                typeof entry[1] === "number" && Number.isFinite(entry[1]),
+            ),
+          );
+          if (deepseekSteps === 1) metrics.usage = usage;
+          else
+            for (const key of Object.keys(metrics.usage ?? {})) {
+              if (usage[key] === undefined) delete metrics.usage![key];
+              else metrics.usage![key] = metrics.usage![key]! + usage[key]!;
+            }
+        }
+      }
+      return;
+    }
     if (["command_execution", "mcp_tool_call"].includes(item?.type)) {
       metrics.firstToolMs ??= elapsedMs;
       tools.add(item.id ?? `${item.type}:${item.command ?? item.tool}`);
@@ -113,7 +156,11 @@ export function providerProgress(request: ProviderRequest) {
       return failure;
     },
     finish(): string | undefined {
-      return line("stdout", pending.stdout) ?? line("stderr", pending.stderr);
+      const stdout = pending.stdout;
+      const stderr = pending.stderr;
+      pending.stdout = "";
+      pending.stderr = "";
+      return line("stdout", stdout) ?? line("stderr", stderr);
     },
   };
 }

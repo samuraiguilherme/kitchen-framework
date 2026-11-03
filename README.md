@@ -149,6 +149,11 @@ Implementation proposals that rewrite approved unit tests are rejected before an
 
 ## Configure providers and package checks
 
+DeepSeek Harness with a local Ollama model is available as an opt-in provider.
+See [local DeepSeek setup](docs/local-deepseek.md) for the pinned CLI, model alias,
+machine-local configuration helper, readiness checks, and rollback. Existing
+Codex/Claude defaults remain in place until local model qualification is complete.
+
 Root `kitchen.config.json` supplies versioned finite profiles for the repository's Vitest packages, architecture checks and human observations. Select appropriate profiles in each test plan. Check profiles are human-controlled executable configuration; agents cannot supply arbitrary commands.
 
 ```json

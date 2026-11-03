@@ -7,7 +7,7 @@ export type Station =
   | "implementation"
   | "verify"
   | "publish";
-export type ProviderName = "codex" | "claude";
+export type ProviderName = "codex" | "claude" | "deepseek";
 export interface Finding {
   id: string;
   rule: string;
@@ -90,11 +90,19 @@ export interface ReviewOutput {
   summary: string;
   findings: Finding[];
 }
+export interface DeepSeekOptions {
+  version: string;
+  baseURL: string;
+  contextWindow: number;
+  maxTokens: number;
+  expectedModelDigest?: string;
+}
 export interface RoleConfig {
   provider: ProviderName;
   model?: string;
   executable?: string;
   windowsSandbox?: "elevated" | "unelevated";
+  dsh?: DeepSeekOptions;
 }
 export interface Profile {
   version?: string;

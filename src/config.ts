@@ -2,6 +2,25 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { Config, Profile, RoleConfig } from "./types.ts";
 import { stationOrder } from "./domain.ts";
+import { validateDeepSeekConfig } from "./deepseek.ts";
+
+function mergeRole(
+  base: RoleConfig,
+  override?: Partial<RoleConfig>,
+): RoleConfig {
+  if (override === undefined) return base;
+  if (!override || typeof override !== "object" || Array.isArray(override))
+    throw new Error("Invalid provider configuration.");
+  if (override.provider !== undefined && override.provider !== base.provider)
+    return override as RoleConfig;
+  return {
+    ...base,
+    ...override,
+    ...(base.dsh && override.dsh
+      ? { dsh: { ...base.dsh, ...override.dsh } }
+      : {}),
+  };
+}
 
 export function baseBranch(base: string): string {
   const branch =
@@ -16,13 +35,20 @@ export function baseBranch(base: string): string {
     branch.startsWith("refs/") ||
     /[\s~^:?*[\\]/.test(branch) ||
     [...branch].some(
-      (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+      (character) =>
+        character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
     ) ||
     branch.includes("..") ||
     branch.includes("@{") ||
-    branch.split("/").some(
-      (part) => !part || part.startsWith(".") || part.endsWith(".") || part.endsWith(".lock"),
-    )
+    branch
+      .split("/")
+      .some(
+        (part) =>
+          !part ||
+          part.startsWith(".") ||
+          part.endsWith(".") ||
+          part.endsWith(".lock"),
+      )
   )
     throw new Error(
       "Base must name a local branch or an origin/<branch> ref (for example origin/main).",
@@ -47,16 +73,14 @@ export function loadConfig(root: string): Config {
       timeoutMs: 600000,
       ...shared.providers,
       ...local.providers,
-      author: {
-        provider: "codex",
-        ...shared.providers?.author,
-        ...local.providers?.author,
-      },
-      review: {
-        provider: "claude",
-        ...shared.providers?.review,
-        ...local.providers?.review,
-      },
+      author: mergeRole(
+        mergeRole({ provider: "codex" }, shared.providers?.author),
+        local.providers?.author,
+      ),
+      review: mergeRole(
+        mergeRole({ provider: "claude" }, shared.providers?.review),
+        local.providers?.review,
+      ),
     },
     stations: { ...shared.stations, ...local.stations },
     profiles: { ...shared.profiles, ...local.profiles },
@@ -68,10 +92,10 @@ export function loadConfig(root: string): Config {
     const pair = { ...original, ...overrides };
     for (const role of ["author", "review"] as const) {
       if (overrides[role])
-        pair[role] = {
-          ...(original?.[role] ?? config.providers[role]),
-          ...overrides[role],
-        };
+        pair[role] = mergeRole(
+          original?.[role] ?? config.providers[role],
+          overrides[role],
+        );
     }
     config.stations[station] = pair;
   }
@@ -80,16 +104,18 @@ export function loadConfig(root: string): Config {
   const role = (value: RoleConfig) => {
     if (
       !value ||
-      !["codex", "claude"].includes(value.provider) ||
+      !["codex", "claude", "deepseek"].includes(value.provider) ||
       (value.model !== undefined &&
         (typeof value.model !== "string" || !value.model.trim())) ||
       (value.executable !== undefined &&
-        typeof value.executable !== "string") ||
+        (typeof value.executable !== "string" || !value.executable.trim())) ||
+      (value.dsh !== undefined && value.provider !== "deepseek") ||
       (value.windowsSandbox !== undefined &&
         (value.provider !== "codex" ||
           !["elevated", "unelevated"].includes(value.windowsSandbox)))
     )
       throw new Error("Invalid provider configuration.");
+    if (value.provider === "deepseek") validateDeepSeekConfig(value);
   };
   role(config.providers.author);
   role(config.providers.review);

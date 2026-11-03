@@ -22,6 +22,7 @@ import {
   validateFeature,
 } from "./domain.ts";
 import { baseBranch, loadConfig } from "./config.ts";
+import { checkDeepSeekPins } from "./deepseek.ts";
 import { executeChecks, validateCheckPlan } from "./checks.ts";
 import {
   baselineWorktree,
@@ -34,7 +35,7 @@ import {
 } from "./git.ts";
 import { GitHub } from "./github.ts";
 import {
-  hostedProvider,
+  cliProvider,
   validateAuthorOutput,
   validateReviewOutput,
 } from "./providers.ts";
@@ -103,7 +104,7 @@ export class Kitchen {
   }) {
     this.root = path.resolve(options.root);
     this.storage = new Storage(this.root);
-    this.provider = options.provider ?? hostedProvider;
+    this.provider = options.provider ?? cliProvider;
     this.github = options.github ?? new GitHub();
     this.allowFixtureRemote = Boolean(options.github);
   }
@@ -1135,6 +1136,7 @@ export class Kitchen {
       )
         readPreparation(this.root, state, loadConfig(this.root));
       const record = requireAwaitingApproval(state, station);
+      await checkDeepSeekPins(loadConfig(this.root), station);
       if (!options.actor.trim())
         throw new Error("Explicit human approver required.");
       const fingerprint = await this.fingerprint(state, station);

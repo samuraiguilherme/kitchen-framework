@@ -12,6 +12,11 @@ import { runProcess } from "./process.ts";
 import type { ProcessResult } from "./process.ts";
 import { providerProgress } from "./provider-progress.ts";
 import { resolveProviderExecutable } from "./provider-executable.ts";
+import {
+  checkDeepSeekModel,
+  parseDeepSeekOutput,
+  prepareDeepSeek,
+} from "./deepseek.ts";
 import type {
   AuthorOutput,
   Provider,
@@ -125,6 +130,7 @@ export function parseProviderOutput(
   provider: ProviderName,
   raw: string,
 ): unknown {
+  if (provider === "deepseek") return parseDeepSeekOutput(raw);
   const result = JSON.parse(raw);
   if (provider === "codex") return result;
   if (
@@ -146,6 +152,10 @@ export function providerInvocation(
   executable?: string,
   windowsSandbox?: RoleConfig["windowsSandbox"],
 ): { command: string; args: string[] } {
+  if (provider === "deepseek")
+    throw new Error(
+      "DeepSeek invocation requires an isolated configuration; use the CLI provider.",
+    );
   const args =
     provider === "codex"
       ? [
@@ -222,7 +232,7 @@ function errorMessage(value: unknown): string {
 }
 function processError(provider: ProviderName, result: ProcessResult): string {
   let detail = "";
-  if (provider === "codex") {
+  if (provider === "codex" || provider === "deepseek") {
     for (const line of result.stdout.trim().split(/\r?\n/).reverse()) {
       try {
         const event = JSON.parse(line);
@@ -264,33 +274,36 @@ async function invokeProvider(
   const schemaFile = path.join(request.runDir, `${request.role}-schema.json`);
   const answerFile = path.join(request.runDir, `${request.role}-answer.json`);
   writeFileSync(schemaFile, JSON.stringify(schema));
-  writeFileSync(
-    path.join(request.runDir, `${request.role}-prompt.txt`),
-    request.prompt,
-  );
-  const invocation = providerInvocation(
-    request.config.provider,
-    request.config.provider === "codex" ? schemaFile : JSON.stringify(schema),
-    answerFile,
-    request.role,
-    request.config.model,
-    request.config.executable,
-    request.config.windowsSandbox,
-  );
+  const deepseek =
+    request.config.provider === "deepseek"
+      ? prepareDeepSeek(request, schema, probe)
+      : undefined;
+  const invocation =
+    deepseek ??
+    providerInvocation(
+      request.config.provider,
+      request.config.provider === "codex" ? schemaFile : JSON.stringify(schema),
+      answerFile,
+      request.role,
+      request.config.model,
+      request.config.executable,
+      request.config.windowsSandbox,
+    );
   if (probe) {
     if (request.config.provider === "codex")
       invocation.args.push("--skip-git-repo-check");
-    else invocation.args[invocation.args.indexOf("--tools") + 1] = "";
+    else if (request.config.provider === "claude")
+      invocation.args[invocation.args.indexOf("--tools") + 1] = "";
   }
+  const input = deepseek?.input ?? request.prompt;
+  writeFileSync(path.join(request.runDir, `${request.role}-prompt.txt`), input);
   // stdin avoids PowerShell interpolation and Windows command-length limits for prompts.
-  const progress = providerProgress(request);
+  const progress = providerProgress(request, probe);
   if (
     invocation.command !==
     (request.config.executable ?? request.config.provider)
   )
-    progress.report(
-      `resolved executable after app update: ${invocation.command}`,
-    );
+    progress.report(`resolved executable: ${invocation.command}`);
   progress.report(
     `starting ${request.config.provider}; model=${request.config.model ?? "CLI default"}${request.config.provider === "codex" ? `; windowsSandbox=${request.config.windowsSandbox ?? "CLI default"}` : ""}; evidence=${request.runDir}`,
   );
@@ -299,18 +312,39 @@ async function invokeProvider(
     15000,
   );
   let result: ProcessResult;
+  let modelIdentity: Awaited<ReturnType<typeof checkDeepSeekModel>> | undefined;
   const startedAt = new Date().toISOString();
   try {
+    const started = Date.now();
+    if (deepseek) {
+      modelIdentity = await checkDeepSeekModel(
+        request.config,
+        Math.min(request.timeoutMs, 10000),
+        request.signal,
+      );
+      progress.report(`local model available; digest=${modelIdentity.digest}`);
+    }
     result = await runProcess({
-      ...invocation,
+      command: invocation.command,
+      args: invocation.args,
+      ...(deepseek ? { env: deepseek.env } : {}),
       cwd: request.cwd,
-      input: request.prompt,
-      timeoutMs: request.timeoutMs,
+      input,
+      timeoutMs: Math.max(1, request.timeoutMs - (Date.now() - started)),
       signal: request.signal,
       onOutput: progress.capture,
     });
     const failureReason = result.failureReason ?? progress.finish();
     if (failureReason) result = { ...result, code: -1, failureReason };
+  } catch (error) {
+    result = {
+      code: -1,
+      stdout: "",
+      stderr: "",
+      cancelled: request.signal?.aborted === true,
+      timedOut: error instanceof Error && error.name === "TimeoutError",
+      failureReason: error instanceof Error ? error.message : String(error),
+    };
   } finally {
     clearInterval(heartbeat);
   }
@@ -325,6 +359,16 @@ async function invokeProvider(
     startedAt,
     finishedAt: new Date().toISOString(),
     metrics,
+    ...(deepseek
+      ? {
+          deepseek: {
+            ...request.config.dsh,
+            ...modelIdentity,
+            overlayFile: deepseek.overlayFile,
+            overlayHash: deepseek.overlayHash,
+          },
+        }
+      : {}),
   };
   const saveProcess = () =>
     writeFileSync(
@@ -346,10 +390,14 @@ async function invokeProvider(
       request.config.provider === "codex"
         ? readFileSync(answerFile, "utf8")
         : result.stdout;
-    const output = parseProviderOutput(request.config.provider, raw);
+    const output =
+      request.config.provider === "deepseek"
+        ? parseDeepSeekOutput(raw, probe)
+        : parseProviderOutput(request.config.provider, raw);
     if (request.kind === "discovery") validateDiscoveryOutput(output);
     else if (request.role === "author") validateAuthorOutput(output);
     else validateReviewOutput(output);
+    if (deepseek) writeFileSync(answerFile, JSON.stringify(output, null, 2));
     metrics.actionableOutputMs = metrics.durationMs;
     if (request.config.provider === "claude") {
       const envelope = JSON.parse(result.stdout);
@@ -370,7 +418,7 @@ async function invokeProvider(
     request.onMetrics?.(metrics);
   }
 }
-export const hostedProvider: Provider = async (request) => {
+export const cliProvider: Provider = async (request) => {
   const output = await invokeProvider(request);
   return request.kind === "discovery"
     ? validateDiscoveryOutput(output)
@@ -378,6 +426,8 @@ export const hostedProvider: Provider = async (request) => {
       ? validateAuthorOutput(output)
       : validateReviewOutput(output);
 };
+// Existing integrations can retain this name while migrating to local providers.
+export const hostedProvider = cliProvider;
 
 export async function probeProvider(
   config: RoleConfig,

@@ -78,16 +78,104 @@ beforeEach(() => {
 afterEach(() => vi.resetAllMocks());
 
 describe("live model readiness diagnostics", () => {
+  it("checks a pinned local DSH runtime and schema probe without hosted login", async () => {
+    const digest = `sha256:${"a".repeat(64)}`;
+    config({
+      providers: {
+        author: {
+          provider: "deepseek",
+          model: "kitchen-deepseek-r1:8b",
+          dsh: {
+            version: "0.2.2-alpha.3",
+            baseURL: "http://127.0.0.1:11434/v1",
+            contextWindow: 8192,
+            maxTokens: 2048,
+            expectedModelDigest: digest,
+          },
+        },
+      },
+    });
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            models: [{ name: "kitchen-deepseek-r1:8b", digest }],
+          }),
+        ),
+      );
+    run.mockImplementation(async (options) => {
+      if (options.args.includes("@deepseek-ai/dsh@0.2.2-alpha.3")) {
+        if (options.args.includes("--version"))
+          return { ...success, stdout: "0.2.2-alpha.3\n" };
+        expect(options.timeoutMs).toBeGreaterThan(170000);
+        const stdout = [
+          { type: "session", sessionId: "local-probe" },
+          {
+            type: "final",
+            sessionId: "local-probe",
+            reason: { kind: "completed" },
+            text: JSON.stringify({
+              summary: "Kitchen model probe OK",
+              findings: [],
+            }),
+          },
+        ]
+          .map((e) => JSON.stringify(e))
+          .join("\n");
+        return { ...success, stdout };
+      }
+      return fakeProcess(options);
+    });
+    try {
+      const progress: string[] = [];
+      const results = await doctor(root, {
+        onProgress: (message) => progress.push(message),
+      });
+      expect(results.find((r) => r.id === "deepseek-cli")?.status).toBe(
+        "passed",
+      );
+      expect(results.find((r) => r.id === "deepseek-model-1")?.status).toBe(
+        "passed",
+      );
+      expect(results.some((r) => r.id === "deepseek-auth")).toBe(false);
+      expect(
+        run.mock.calls.some(
+          ([o]) => o.args.includes("login") || o.args.includes("auth"),
+        ),
+      ).toBe(false);
+      expect(progress.join(" ")).toContain("local Ollama request");
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
   it("does not require pnpm in a project using another runtime", async () => {
-    writeFileSync(path.join(root, "package.json"), JSON.stringify({ packageManager: "npm@10.0.0" }));
+    writeFileSync(
+      path.join(root, "package.json"),
+      JSON.stringify({ packageManager: "npm@10.0.0" }),
+    );
     const results = await doctor(root);
     expect(results.some((result) => result.id === "pnpm")).toBe(false);
-    expect(run.mock.calls.some(([options]) => options.command === "pnpm")).toBe(false);
+    expect(run.mock.calls.some(([options]) => options.command === "pnpm")).toBe(
+      false,
+    );
   });
   it("checks pnpm availability without requiring a nonexistent version pin", async () => {
     writeFileSync(path.join(root, "package.json"), "{}");
-    config({ profiles: { types: { kind: "command", command: "pnpm", args: ["check"], parser: "exit-code", timeoutMs: 1000 } } });
-    expect((await doctor(root)).find((result) => result.id === "pnpm")?.status).toBe("passed");
+    config({
+      profiles: {
+        types: {
+          kind: "command",
+          command: "pnpm",
+          args: ["check"],
+          parser: "exit-code",
+          timeoutMs: 1000,
+        },
+      },
+    });
+    expect(
+      (await doctor(root)).find((result) => result.id === "pnpm")?.status,
+    ).toBe("passed");
   });
   it("checks and probes the replacement desktop runtime without rewriting config", async () => {
     const bin = path.join(root, "OpenAI", "Codex", "bin");

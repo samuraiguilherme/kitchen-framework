@@ -17,10 +17,110 @@ function fixture(shared: unknown, local?: unknown) {
 }
 
 describe("machine-local Kitchen configuration", () => {
-  it.each(["origin/main", "origin/release/next", "main", "refs/heads/trunk", "refs/remotes/origin/master"])("accepts a project's base branch: %s", (base) => {
+  it.each([null, false, 0, []])(
+    "rejects an invalid role override %j",
+    (author) => {
+      expect(() => loadConfig(fixture({}, { providers: { author } }))).toThrow(
+        /configuration/i,
+      );
+    },
+  );
+  const deepseek = {
+    provider: "deepseek",
+    model: "kitchen-deepseek-r1:8b",
+    dsh: {
+      version: "0.2.2-alpha.3",
+      baseURL: "http://127.0.0.1:11434/v1",
+      contextWindow: 8192,
+      maxTokens: 2048,
+    },
+  };
+  it("replaces Codex-specific settings on a DeepSeek provider switch", () => {
+    const root = fixture(
+      {
+        providers: {
+          author: {
+            provider: "codex",
+            model: "gpt",
+            executable: "old-codex.exe",
+            windowsSandbox: "elevated",
+          },
+        },
+      },
+      {
+        providers: { author: deepseek },
+        stations: { plan: { author: deepseek } },
+      },
+    );
+    expect(loadConfig(root).providers.author).toEqual(deepseek);
+    expect(loadConfig(root).stations.plan?.author).toEqual(deepseek);
+  });
+  it("merges nested DSH settings and drops them when switching back to Codex", () => {
+    const root = fixture(
+      {
+        providers: { author: deepseek },
+        stations: { plan: { author: deepseek } },
+      },
+      {
+        providers: { author: { dsh: { maxTokens: 1024 } } },
+        stations: { plan: { author: { provider: "codex" } } },
+      },
+    );
+    expect(loadConfig(root).providers.author.dsh).toEqual({
+      ...deepseek.dsh,
+      maxTokens: 1024,
+    });
+    expect(loadConfig(root).stations.plan?.author).toEqual({
+      provider: "codex",
+    });
+  });
+  it.each([
+    { ...deepseek, model: undefined },
+    { ...deepseek, model: "deepseek:cloud" },
+    { ...deepseek, windowsSandbox: "unelevated" },
+    ...["latest", "next", "^0.2.2", "0.2.2;echo"].map((version) => ({
+      ...deepseek,
+      dsh: { ...deepseek.dsh, version },
+    })),
+    ...[
+      "https://api.deepseek.com/v1",
+      "http://localhost:11434/v1",
+      "http://127.0.0.1:11434/v1?proxy=x",
+      "http://user:password@127.0.0.1/v1",
+    ].map((baseURL) => ({ ...deepseek, dsh: { ...deepseek.dsh, baseURL } })),
+    { ...deepseek, dsh: { ...deepseek.dsh, maxTokens: 8192 } },
+    { ...deepseek, dsh: { ...deepseek.dsh, maxTokens: 0 } },
+    { ...deepseek, dsh: { ...deepseek.dsh, contextWindow: 1.5 } },
+    {
+      ...deepseek,
+      dsh: { ...deepseek.dsh, expectedModelDigest: "unverified" },
+    },
+    { provider: "claude", dsh: deepseek.dsh },
+  ])("rejects unsupported DeepSeek settings %#", (author) => {
+    expect(() => loadConfig(fixture({ providers: { author } }))).toThrow(
+      /configuration/i,
+    );
+  });
+  it.each([
+    "origin/main",
+    "origin/release/next",
+    "main",
+    "refs/heads/trunk",
+    "refs/remotes/origin/master",
+  ])("accepts a project's base branch: %s", (base) => {
     expect(loadConfig(fixture({ base })).base).toBe(base);
   });
-  it.each(["", "HEAD", "origin/HEAD", "--all", "main~1", "origin/../main", "main:other", null, 42])("rejects invalid base branches: %s", (base) => {
+  it.each([
+    "",
+    "HEAD",
+    "origin/HEAD",
+    "--all",
+    "main~1",
+    "origin/../main",
+    "main:other",
+    null,
+    42,
+  ])("rejects invalid base branches: %s", (base) => {
     expect(() => loadConfig(fixture({ base }))).toThrow(/Base must name/);
   });
   it("requires an explicit review opt-in even when a reviewer is configured", () => {

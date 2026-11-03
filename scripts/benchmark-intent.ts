@@ -16,7 +16,7 @@ import { buildContext } from "../src/context.ts";
 import { lintDocument } from "../src/domain.ts";
 import { git, sourceSnapshot } from "../src/git.ts";
 import { promptSections } from "../src/metrics.ts";
-import { hostedProvider, validateAuthorOutput } from "../src/providers.ts";
+import { cliProvider, validateAuthorOutput } from "../src/providers.ts";
 import { stationPrompt } from "../src/prompts.ts";
 import type {
   AuthorOutput,
@@ -84,7 +84,7 @@ const workload = {
   request,
   feedback,
   offline: values.offline,
-  schema: "Current hostedProvider author schema for both prompt builders",
+  schema: "Current cliProvider author schema for both prompt builders",
   context:
     "Clean synthetic initial feature: empty candidate diff and untracked list. Both providers read the actual shared checkout; its source fingerprint and dirty status are recorded.",
   resume:
@@ -92,7 +92,7 @@ const workload = {
   sourceGuards:
     "Current full sourceSnapshot before and after every call, timed separately in both modes. This compares prompt builders, not the entire old and new Kitchen runners.",
   sessions:
-    "Fresh read-only hostedProvider sessions. Provider-side prompt cache/cold starts are not controlled; emitted usage is retained.",
+    "Fresh read-only cliProvider sessions. Provider-side prompt cache/cold starts are not controlled; emitted usage is retained.",
 };
 if (!values.live && !values.offline) {
   console.log(
@@ -398,7 +398,7 @@ async function runSample(
     if (values.offline) return sample;
     const output = validateAuthorOutput(
       await measure("providerMs", () =>
-        hostedProvider({
+        cliProvider({
           station: "intent",
           role: "author",
           prompt,

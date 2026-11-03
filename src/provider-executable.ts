@@ -7,6 +7,8 @@ export function resolveProviderExecutable(
   executable?: string,
   searchPath = process.env.PATH ?? "",
 ): string {
+  if (provider === "deepseek")
+    return executable ?? (process.platform === "win32" ? "npx.cmd" : "npx");
   if (
     provider !== "codex" ||
     !executable ||

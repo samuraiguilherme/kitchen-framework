@@ -6,6 +6,7 @@ import { stationOrder } from "./domain.ts";
 import { runProcess } from "./process.ts";
 import { probeProvider } from "./providers.ts";
 import { resolveProviderExecutable } from "./provider-executable.ts";
+import { deepseekVersionArgs } from "./deepseek.ts";
 import type { CheckResult, RoleConfig } from "./types.ts";
 
 export async function doctor(
@@ -19,7 +20,8 @@ export async function doctor(
   results.push({
     id: "node-22",
     required: true,
-    status: Number(process.versions.node.split(".")[0]) >= 22 ? "passed" : "failed",
+    status:
+      Number(process.versions.node.split(".")[0]) >= 22 ? "passed" : "failed",
     reason: process.versions.node,
   });
   const config = loadConfig(root);
@@ -34,7 +36,8 @@ export async function doctor(
         pair.config.provider === role.provider &&
         pair.config.model === role.model &&
         pair.config.executable === role.executable &&
-        pair.config.windowsSandbox === role.windowsSandbox,
+        pair.config.windowsSandbox === role.windowsSandbox &&
+        JSON.stringify(pair.config.dsh) === JSON.stringify(role.dsh),
     );
     if (existing) {
       if (!existing.roles.includes(label)) existing.roles.push(label);
@@ -62,7 +65,8 @@ export async function doctor(
       ? packageManager.slice(5).split("+")[0]
       : undefined;
   const needsPnpm =
-    pinned !== undefined || Object.values(config.profiles).some((profile) =>
+    pinned !== undefined ||
+    Object.values(config.profiles).some((profile) =>
       [
         profile.command,
         profile.setup?.command,
@@ -92,12 +96,16 @@ export async function doctor(
     provider: RoleConfig["provider"];
     command: string;
     prefix: string;
+    version?: string;
   }> = [];
   for (const pair of pairs) {
     const provider = pair.config.provider;
     const command = resolveProviderExecutable(provider, pair.config.executable);
     let entry = executables.find(
-      (e) => e.provider === provider && e.command === command,
+      (e) =>
+        e.provider === provider &&
+        e.command === command &&
+        e.version === pair.config.dsh?.version,
     );
     if (!entry) {
       const count = executables.filter((e) => e.provider === provider).length;
@@ -105,16 +113,20 @@ export async function doctor(
         provider,
         command,
         prefix: provider + (count ? `-${count + 1}` : ""),
+        version: pair.config.dsh?.version,
       };
       executables.push(entry);
-      checks.push(
-        {
-          id: `${entry.prefix}-cli`,
-          command,
-          args: ["--version"],
-          required: true,
-        },
-        {
+      checks.push({
+        id: `${entry.prefix}-cli`,
+        command,
+        args:
+          provider === "deepseek"
+            ? deepseekVersionArgs(pair.config)
+            : ["--version"],
+        required: true,
+      });
+      if (provider !== "deepseek")
+        checks.push({
           id: `${entry.prefix}-auth`,
           command,
           args:
@@ -122,10 +134,12 @@ export async function doctor(
               ? ["login", "status"]
               : ["auth", "status", "--json"],
           required: true,
-        },
-      );
+        });
     }
-    pair.prerequisites = [`${entry.prefix}-cli`, `${entry.prefix}-auth`];
+    pair.prerequisites = [
+      `${entry.prefix}-cli`,
+      ...(provider === "deepseek" ? [] : [`${entry.prefix}-auth`]),
+    ];
   }
   const settled = await Promise.allSettled(
     checks.map(async (check) => {
@@ -137,8 +151,13 @@ export async function doctor(
       });
       const failed =
         result.code !== 0 ||
+        (/^deepseek(?:-\d+)?-cli$/.test(check.id) &&
+          result.stdout.trim() !==
+            executables.find((entry) => `${entry.prefix}-cli` === check.id)
+              ?.version) ||
         (check.id === "pnpm" &&
-          pinned !== undefined && result.stdout.trim() !== pinned);
+          pinned !== undefined &&
+          result.stdout.trim() !== pinned);
       let reason = failed
         ? result.timedOut
           ? "Timed out; inspect CLI availability/authentication."
@@ -183,6 +202,19 @@ export async function doctor(
     );
   }
   const runDir = path.join(root, ".kitchen", "doctor", randomUUID());
+  if (pairs.some((pair) => pair.config.provider === "deepseek")) {
+    const [major, minor] = process.versions.node.split(".").map(Number);
+    const supported = major! > 24 || (major === 24 && minor! >= 9);
+    results.push({
+      id: "deepseek-node",
+      required: true,
+      status: supported ? "passed" : "failed",
+      reason: `DSH requires Node >=24.9; current ${process.versions.node}`,
+    });
+    for (const pair of pairs)
+      if (pair.config.provider === "deepseek")
+        pair.prerequisites.push("deepseek-node");
+  }
   for (const [index, pair] of pairs.entries()) {
     const label = `${pair.config.provider} model=${pair.config.model ?? "CLI default (inherited)"}${pair.config.provider === "codex" ? `; windowsSandbox=${pair.config.windowsSandbox ?? "CLI default (inherited)"}` : ""}; ${pair.roles.join(", ")}`;
     const check: CheckResult = {
@@ -200,13 +232,16 @@ export async function doctor(
     else {
       const probeDir = path.join(runDir, check.id);
       options.onProgress?.(
-        `Checking ${label} with a small hosted request (uses model quota).`,
+        `Checking ${label} with a small ${pair.config.provider === "deepseek" ? "local Ollama request" : "hosted request (uses model quota)"}.`,
       );
       try {
         await probeProvider(
           pair.config,
           probeDir,
-          Math.min(config.providers.timeoutMs, 60000),
+          Math.min(
+            config.providers.timeoutMs,
+            pair.config.provider === "deepseek" ? 180000 : 60000,
+          ),
           options.signal,
         );
         check.status = "passed";

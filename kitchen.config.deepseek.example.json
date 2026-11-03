@@ -1,0 +1,15 @@
+{
+  "providers": {
+    "author": {
+      "provider": "deepseek",
+      "model": "kitchen-deepseek-r1:8b",
+      "dsh": {
+        "version": "0.2.2-alpha.3",
+        "baseURL": "http://127.0.0.1:11434/v1",
+        "contextWindow": 8192,
+        "maxTokens": 2048
+      }
+    },
+    "timeoutMs": 1200000
+  }
+}
