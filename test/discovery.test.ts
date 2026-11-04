@@ -85,6 +85,29 @@ afterEach(() => {
 });
 
 describe("read-only repository discovery", () => {
+  it("uses the independent discovery author and schedules by that provider", async () => {
+    const setup = fixture();
+    setup.config.providers.author = { provider: "deepseek", model: "main-local" };
+    setup.config.discovery = { enabled: true, author: { provider: "claude", model: "reader" } };
+    const calls: ProviderRequest[] = [];
+    let active = 0, maximum = 0;
+    const provider: Provider = async request => {
+      calls.push(request); active++; maximum = Math.max(maximum, active);
+      await new Promise(resolve => setTimeout(resolve, 10)); active--;
+      return setup.output(request);
+    };
+    await discover(setup.options(provider));
+    expect(maximum).toBe(2);
+    expect(calls.every(call => call.config.model === "reader")).toBe(true);
+    setup.config.providers.author.model = "changed-unused-main";
+    await discover(setup.options(provider));
+    expect(calls).toHaveLength(2);
+    setup.config.discovery.author = { provider: "deepseek", model: "local-reader" };
+    maximum = 0;
+    await discover(setup.options(provider));
+    expect(maximum).toBe(1);
+    expect(calls).toHaveLength(4);
+  });
   it("uses the effective Claude plan author and invalidates only effective provider settings", async () => {
     const setup = fixture();
     const calls: ProviderRequest[] = [];

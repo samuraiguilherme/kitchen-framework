@@ -7,7 +7,9 @@ import { doctor } from "./doctor.ts";
 import { evaluate } from "./evaluate.ts";
 import { initializeProject, projectRoot } from "./project.ts";
 import { requireAwaitingApproval, stationOrder } from "./domain.ts";
-import { featureSummary } from "./console.ts";
+import { featureSummary, nextStepSummary } from "./console.ts";
+import { Storage } from "./storage.ts";
+import { readTimings, renderTimings } from "./timings.ts";
 import type { FeatureState, Station } from "./types.ts";
 
 const usage = `Local Development Kitchen
@@ -19,6 +21,7 @@ const usage = `Local Development Kitchen
   kitchen approve <feature> <station> --actor <name> [--resolutions <json>] [--minutes <n>]
   kitchen status <feature>
   kitchen report <feature> [--output <path>]
+  kitchen timings <feature> [--json]
   kitchen evaluate <station> [--labels <json>] [--live]
   kitchen publish <feature> --preview
   kitchen publish <feature>
@@ -61,7 +64,7 @@ async function main(): Promise<void> {
   const [command, feature, selected] = positionals;
   if (![
     "init", "doctor", "evaluate", "start", "prepare", "run", "approve",
-    "status", "report", "publish",
+    "status", "report", "timings", "publish",
   ].includes(command!))
     throw new Error("Unknown command.\n" + usage);
   if (values.base !== undefined && command !== "init")
@@ -125,12 +128,17 @@ async function main(): Promise<void> {
       throw new Error("Select a valid station: " + stationOrder.join(", "));
     return value as Station;
   };
-  const printFeature = (state: FeatureState, selected?: Station) =>
+  const printFeature = (state: FeatureState, selected?: Station) => {
     console.log(
       values.json
         ? JSON.stringify(state, null, 2)
         : featureSummary(state, selected, invocation),
     );
+    if (values.json && (command === "run" || command === "approve")) {
+      const next = nextStepSummary(state, invocation);
+      if (next) console.error(next);
+    }
+  };
   try {
     if (command === "doctor") {
       const results = await doctor(root, {
@@ -159,6 +167,11 @@ async function main(): Promise<void> {
       return;
     }
     if (!feature) throw new Error("Feature name required.");
+    if (command === "timings") {
+      const report = readTimings(root, feature);
+      console.log(values.json ? JSON.stringify(report, null, 2) : renderTimings(report));
+      return;
+    }
     if (command === "start") {
       const request = values["request-file"]
         ? readFileSync(path.resolve(cwd, values["request-file"]), "utf8")
@@ -276,6 +289,21 @@ async function main(): Promise<void> {
         ),
       );
     else throw new Error("Unknown command.\n" + usage);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (
+      feature && (command === "run" || command === "approve") &&
+      !/^Next:/m.test(message)
+    ) {
+      try {
+        // Only suggest status when this feature has readable saved state.
+        new Storage(root).read(feature);
+      } catch {
+        throw error;
+      }
+      throw new Error(`${message}\nNext: ${invocation} status ${feature}`, { cause: error });
+    }
+    throw error;
   } finally {
     terminal?.close();
     process.removeListener("SIGINT", cancel);

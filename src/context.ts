@@ -6,6 +6,7 @@ import { loadConfig } from "./config.ts";
 import { readPreparation } from "./preparation.ts";
 import { safePath } from "./domain.ts";
 import type { FeatureState, Station } from "./types.ts";
+import { evidenceBundle, mentionedPaths } from "./evidence-bundle.ts";
 
 export function targetPaths(
   state: FeatureState,
@@ -13,6 +14,10 @@ export function targetPaths(
 ): string[] {
   if (includePlanScope && state.stations.plan?.output?.allowedPaths.length)
     return state.stations.plan.output.allowedPaths;
+  const accepted = Object.values(state.stations).filter(record => record?.status === "approved")
+    .flatMap(record => record!.artifactFiles).filter(file => file.endsWith(".md"))
+    .map(file => readFileSync(safePath(state.worktree, file), "utf8")).join("\n");
+  const exact = mentionedPaths(state.request + "\n" + accepted);
   const explicit = [
     ...state.request.matchAll(/\b(?:apps|packages)\/[a-z0-9-]+\b/g),
   ].map((match) => match[0]);
@@ -22,7 +27,7 @@ export function targetPaths(
     for (const kind of ["apps", "packages"])
       if (existsSync(path.join(state.worktree, kind, name, "package.json")))
         explicit.push(`${kind}/${name}`);
-  return [...new Set(explicit)].map((directory) => `${directory}/AGENTS.md`);
+  return [...new Set([...explicit.map((directory) => `${directory}/AGENTS.md`), ...exact])];
 }
 
 export async function buildContext(
@@ -30,6 +35,7 @@ export async function buildContext(
   station: Station,
   configRoot: string,
   compact = false,
+  evidenceOptions: { codeFingerprint?: string; persist?: boolean; enabled?: boolean } = {},
 ): Promise<string> {
   const config = loadConfig(configRoot);
   const selected: Record<Station, string[]> = {
@@ -58,6 +64,8 @@ export async function buildContext(
       sections.push(`DOCUMENT ${file}\n${readFileSync(absolute, "utf8")}`);
   }
   if (station === "intent") return sections.join("\n\n");
+  if (evidenceOptions.enabled !== false)
+    sections.push((await evidenceBundle(state, station, configRoot, evidenceOptions)).text);
   const execution = ["unit-tests", "implementation", "verify", "publish"].includes(station);
   const relevant = new Set([
     ...selected[station], station,

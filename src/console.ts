@@ -54,11 +54,21 @@ export function featureSummary(
   }
   if (state.pr) {
     lines.push("", `Draft PR: ${state.pr}`);
-    return lines.join("\n");
+  } else {
+    const next = nextStepSummary(state, invocation);
+    if (next) lines.push("", next);
   }
+  return lines.join("\n");
+}
+
+export function nextStepSummary(
+  state: FeatureState,
+  invocation = "kitchen",
+): string {
+  if (state.pr) return "";
+  const lines: string[] = [];
   if (state.preparation?.status === "failed") {
     lines.push(
-      "",
       "Correct the recorded preparation failure before authoring.",
       `Next: ${invocation} prepare ${state.feature} --preparation <json>`,
     );
@@ -79,16 +89,15 @@ export function featureSummary(
         command = `${invocation} approve ${state.feature} ${next} --actor <your-name>`;
       else
         lines.push(
-          "",
           "Resolve blocking findings or check failures before approval.",
         );
     } else if (record?.status === "awaiting-input")
       lines.push(
-        "",
         "Answer the saved questions interactively, or supply --feedback-file <answers.txt>.",
       );
-    lines.push("", `Next: ${command}`);
+    if (lines.length) lines.push("");
+    lines.push(`Next: ${command}`);
   } else if (state.stations.publish?.status === "approved")
-    lines.push("", `Next: ${invocation} publish ${state.feature}`);
+    lines.push(`Next: ${invocation} publish ${state.feature}`);
   return lines.join("\n");
 }

@@ -5,6 +5,7 @@ import { targetPaths } from "./context.ts";
 import { instructions } from "./prompts.ts";
 import { validateDiscoveryOutput } from "./providers.ts";
 import { tokenPromptVersion } from "./token-budget.ts";
+import { contextPolicyVersion } from "./evidence-bundle.ts";
 import type {
   Config,
   DiscoveryResult,
@@ -25,15 +26,18 @@ const tasks = [
       "Trace existing tests, acceptance pitfalls, executable profiles and runtime prerequisites for this request. Cite existing code and tests; distinguish operator preparation from product decisions.",
   },
 ] as const;
+export const discoveryAuthor = (config: Config) =>
+  config.discovery?.author ?? config.stations.plan?.author ?? config.providers.author;
 export const discoveryPolicy = (config: Config) =>
   hash(
     JSON.stringify({
       tokenPromptVersion,
+      contextPolicyVersion,
       profiles: config.profiles,
-      author: config.stations.plan?.author ?? config.providers.author,
+      author: discoveryAuthor(config),
       enabled: config.discovery?.enabled === true,
       scheduling:
-        (config.stations.plan?.author ?? config.providers.author).provider ===
+        discoveryAuthor(config).provider ===
         "deepseek"
           ? "sequential"
           : "concurrent",
@@ -116,7 +120,7 @@ export async function discover(options: {
     }
   }
   const local =
-    (config.stations.plan?.author ?? config.providers.author).provider ===
+    discoveryAuthor(config).provider ===
     "deepseek";
   options.onCache?.(false);
   options.onProgress?.(
@@ -136,7 +140,7 @@ export async function discover(options: {
             kind: "discovery",
             cwd: state.worktree,
             runDir: path.join(options.runDir, `discovery-${task.id}`),
-            config: config.stations.plan?.author ?? config.providers.author,
+            config: discoveryAuthor(config),
             timeoutMs: config.providers.timeoutMs,
             signal: controller.signal,
             onProgress: options.onProgress,

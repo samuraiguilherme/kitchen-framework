@@ -39,6 +39,16 @@ export interface CheckResult {
   durationMs?: number;
 }
 export interface ProviderMetrics {
+  station?: Station;
+  role?: "author" | "review";
+  provider?: ProviderName;
+  model?: string;
+  attempt?: string;
+  sessionId?: string;
+  startedAt?: string;
+  completedAt?: string;
+  terminationReason?: string;
+  spans?: Array<{ kind: "model" | "tool"; id: string; name?: string; startMs: number; durationMs?: number }>;
   durationMs: number;
   firstEventMs?: number;
   firstToolMs?: number;
@@ -75,6 +85,10 @@ export interface TokenMetrics {
   warnings: string[];
 }
 export interface RunMetrics {
+  station?: Station;
+  runId?: string;
+  status?: StationRecord["status"];
+  error?: string;
   startedAt: string;
   completedAt?: string;
   durationMs?: number;
@@ -144,6 +158,7 @@ export interface RoleConfig {
   executable?: string;
   windowsSandbox?: "elevated" | "unelevated";
   dsh?: DeepSeekOptions;
+  sessionReuse?: "never" | "after-input";
 }
 export interface Profile {
   version?: string;
@@ -177,7 +192,7 @@ export interface Config {
     >
   >;
   profiles: Record<string, Profile>;
-  discovery?: { enabled?: boolean };
+  discovery?: { enabled?: boolean; author?: RoleConfig };
 }
 export interface Approval {
   actor: string;
@@ -187,6 +202,7 @@ export interface Approval {
   reviewMinutes?: number;
 }
 export interface StationRecord {
+  authorSession?: AuthorSession;
   status:
     | "running"
     | "awaiting-input"
@@ -207,6 +223,12 @@ export interface StationRecord {
   approval?: Approval;
   error?: string;
   metrics?: RunMetrics;
+}
+export interface AuthorSession {
+  id: string;
+  home: string;
+  fingerprint: string;
+  conversationLength: number;
 }
 export interface FeatureState {
   version: 1;
@@ -253,6 +275,9 @@ export interface ProviderRequest {
   onProgress?: (message: string) => void;
   kind?: "discovery";
   onMetrics?: (metrics: ProviderMetrics) => void;
+  session?: { id?: string; home: string };
+  onSession?: (id: string) => void;
+  freshPrompt?: string;
 }
 export type Provider = (request: ProviderRequest) => Promise<unknown>;
 export interface PrInput {

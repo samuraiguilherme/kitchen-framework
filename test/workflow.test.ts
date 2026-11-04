@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Kitchen } from "../src/kitchen.ts";
 import { stationOrder } from "../src/domain.ts";
-import type { Config, PrInput, RoleConfig } from "../src/types.ts";
+import type { Config, PrInput, RoleConfig, ProviderRequest } from "../src/types.ts";
 
 const documents: Record<string, string> = {
   intent:
@@ -34,6 +34,47 @@ const checks = [
 ];
 
 describe("station latency safeguards", () => {
+  it.each(["unchanged", "source", "instructions", "model", "history"])("isolates after-input author sessions when %s", async change => {
+    const setup = fixture();
+    let digest = "a".repeat(64);
+    const server = createServer((_request, response) => response.end(JSON.stringify({ models: [{ name: "local", digest }] })));
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("No address");
+    try {
+      writeFileSync(path.join(setup.root, "kitchen.config.local.json"), JSON.stringify({ providers: { author: {
+        provider: "deepseek", model: "local", sessionReuse: "after-input",
+        dsh: { version: "0.2.2-alpha.3", baseURL: `http://127.0.0.1:${address.port}/v1`, contextWindow: 16384, maxTokens: 8192 },
+      } } }));
+      const calls: ProviderRequest[] = [];
+      const kitchen = new Kitchen({ root: setup.root, github: setup.gateway, provider: async request => {
+        calls.push(request);
+        if (calls.length === 1) {
+          request.onSession?.("session-initial");
+          return { summary: "Question", questions: [{ id: "who", text: "Who needs this?" }], document: null, files: [], allowedPaths: [], unitTestFiles: [], scaffoldFiles: [], checks: [] };
+        }
+        return setup.provider(request);
+      } });
+      await kitchen.start("answer", { request: "Return 42" });
+      const waiting = await kitchen.run("answer", "intent");
+      expect(waiting.stations.intent?.authorSession?.id).toBe("session-initial");
+      if (change === "source") writeFileSync(path.join(waiting.worktree, "src/answer.ts"), "export const answer = () => 40;");
+      if (change === "instructions") writeFileSync(path.join(waiting.worktree, "AGENTS.md"), "New convention");
+      if (change === "model") digest = "b".repeat(64);
+      if (change === "history") {
+        const file = path.join(setup.root, ".kitchen/features/answer/state.json");
+        const state = JSON.parse(readFileSync(file, "utf8")); state.conversation[0].text = "Edited original request"; writeFileSync(file, JSON.stringify(state));
+      }
+      await kitchen.run("answer", "intent", { feedback: "Local callers need exactly 42" });
+      expect(calls[1]?.session?.id).toBe(change === "unchanged" ? "session-initial" : undefined);
+      if (change === "unchanged") {
+        expect(calls[1]?.prompt).toContain("Human/model continuation");
+        expect(calls[1]?.prompt).not.toContain("Existing template");
+        expect(calls[1]?.freshPrompt).toContain("Existing template");
+      }
+      expect((await kitchen.status("answer")).stations.intent?.authorSession).toBeUndefined();
+    } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+  });
   it("uses opt-in compact prompts and makes token-policy changes stale the candidate", async () => {
     const setup = fixture();
     const server = createServer((_request, response) => response.end(JSON.stringify({ models: [{ name: "local", digest: "a".repeat(64) }] })));
@@ -787,6 +828,30 @@ describe("station workflow", () => {
       "author",
       "author",
       "review",
+    ]);
+  });
+  it("rejects a custom provider's spec implementation proposal before applying or reviewing it", async () => {
+    const setup = fixture(0, { spec: { reviewEnabled: true } });
+    await setup.kitchen.start("answer", { request: "Return 42." });
+    await setup.kitchen.run("answer", "intent");
+    await setup.kitchen.approve("answer", "intent", { actor: "chef" });
+    const kitchen = new Kitchen({
+      root: setup.root,
+      github: setup.gateway,
+      provider: async (request) => ({
+        ...(await setup.provider(request)), document: null,
+        files: [{ path: "src/answer.ts", action: "write", content: "export const answer = 42;\n", kind: "implementation" }],
+      }),
+    });
+    await expect(kitchen.run("answer", "spec")).rejects.toThrow(/Invalid spec author output/);
+    const state = await kitchen.status("answer");
+    expect(state.stations.spec?.status).toBe("failed");
+    expect(state.stations.spec?.output).toBeUndefined();
+    expect(state.stations.spec?.artifactFiles).toEqual([]);
+    expect(existsSync(path.join(state.worktree, "docs/features/answer/spec.md"))).toBe(false);
+    expect(readFileSync(path.join(state.worktree, "src/answer.ts"), "utf8")).toBe("export const answer = 0;\n");
+    expect(setup.calls.map(({ station, role }) => [station, role])).toEqual([
+      ["intent", "author"], ["spec", "author"],
     ]);
   });
   it("requires a new run when review is enabled before or after approval", async () => {

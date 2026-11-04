@@ -82,32 +82,54 @@ export const authorSchema = object({
   scaffoldFiles: strings,
   checks: { type: "array", items: checkSchema },
 });
-const intentStructuredSchema = object({
+const emptyAuthorArrays = Object.fromEntries(
+  ["files", "allowedPaths", "unitTestFiles", "scaffoldFiles", "checks"].map(
+    (key) => [key, { type: "array", items: str, maxItems: 0 }],
+  ),
+);
+const documentStructuredSchema = object({
   ...authorSchema.properties,
   document: { anyOf: [{ type: "string", pattern: "\\S" }, { type: "null" }] },
-  ...Object.fromEntries(
-    ["files", "allowedPaths", "unitTestFiles", "scaffoldFiles", "checks"].map(
-      (key) => [key, { type: "array", items: str, maxItems: 0 }],
-    ),
-  ),
+  files: { type: "array", items: str, maxItems: 0 },
+});
+const documentAlternatives = [
+  {
+    properties: {
+      questions: { type: "array", minItems: 1 },
+      document: { type: "null" },
+      ...emptyAuthorArrays,
+    },
+  },
+  {
+    properties: {
+      questions: { type: "array", maxItems: 0 },
+      document: { type: "string", pattern: "\\S" },
+    },
+  },
+];
+const documentAuthorSchema = {
+  ...documentStructuredSchema,
+  anyOf: documentAlternatives,
+};
+const intentStructuredSchema = object({
+  ...documentStructuredSchema.properties,
+  ...emptyAuthorArrays,
 });
 export const intentAuthorSchema = {
   ...intentStructuredSchema,
-  anyOf: [
-    {
-      properties: {
-        questions: { type: "array", minItems: 1 },
-        document: { type: "null" },
-      },
-    },
-    {
-      properties: {
-        questions: { type: "array", maxItems: 0 },
-        document: { type: "string", pattern: "\\S" },
-      },
-    },
-  ],
+  anyOf: documentAlternatives,
 };
+const documentStations: readonly Station[] = ["intent", "spec", "plan", "test-plan"];
+export function authorSchemaForStation(station?: Station, provider?: ProviderName) {
+  // Hosted transports prohibit a root anyOf. Restrict their fields and enforce
+  // the questions/document union locally with the full station validator.
+  const hosted = provider === "codex" || provider === "claude";
+  if (station === "intent")
+    return hosted ? intentStructuredSchema : intentAuthorSchema;
+  if (station && documentStations.includes(station))
+    return hosted ? documentStructuredSchema : documentAuthorSchema;
+  return authorSchema;
+}
 export const reviewSchema = object({
   summary: str,
   findings: { type: "array", items: findingSchema },
@@ -127,6 +149,7 @@ export const discoverySchema = object({
 const ajv = new Ajv({ allErrors: true });
 const authorValidator = ajv.compile(authorSchema);
 const intentAuthorValidator = ajv.compile(intentAuthorSchema);
+const documentAuthorValidator = ajv.compile(documentAuthorSchema);
 const reviewValidator = ajv.compile(reviewSchema);
 const discoveryValidator = ajv.compile(discoverySchema);
 export function validateDiscoveryOutput(value: unknown) {
@@ -140,10 +163,12 @@ export function validateAuthorOutput(
   value: unknown,
   station?: Station,
 ): AuthorOutput {
-  const validator = station === "intent" ? intentAuthorValidator : authorValidator;
+  const documentStation = station !== undefined && documentStations.includes(station);
+  const validator = station === "intent" ? intentAuthorValidator
+    : documentStation ? documentAuthorValidator : authorValidator;
   if (!validator(value))
     throw new Error(
-      `Invalid ${station === "intent" ? "intent author" : "author"} output: ${ajv.errorsText(validator.errors)}`,
+      `Invalid ${documentStation ? `${station} author` : "author"} output: ${ajv.errorsText(validator.errors)}`,
     );
   return value as unknown as AuthorOutput;
 }
@@ -304,12 +329,10 @@ async function invokeProviderAttempt(
   deadline = Date.now() + request.timeoutMs,
 ): Promise<unknown> {
   mkdirSync(request.runDir, { recursive: true });
-  // Hosted structured-output transports prohibit a root anyOf. Keep their
-  // intent fields restricted and enforce the cross-field union locally with
-  // the same validator used for DSH and custom providers.
-  const authorOutputSchema = request.station === "intent" && !probe
-    ? request.config.provider === "deepseek" ? intentAuthorSchema : intentStructuredSchema
-    : authorSchema;
+  const authorOutputSchema = authorSchemaForStation(
+    probe ? undefined : request.station,
+    request.config.provider,
+  );
   const schema =
     request.kind === "discovery"
       ? discoverySchema
@@ -355,7 +378,7 @@ async function invokeProviderAttempt(
     `starting ${request.config.provider}; model=${request.config.model ?? "CLI default"}${request.config.provider === "codex" ? `; windowsSandbox=${request.config.windowsSandbox ?? "CLI default"}` : ""}; evidence=${request.runDir}`,
   );
   const heartbeat = setInterval(
-    () => progress.report("provider still running"),
+    () => { progress.checkpoint(); progress.report("provider still running"); },
     15000,
   );
   let result: ProcessResult;
@@ -402,6 +425,9 @@ async function invokeProviderAttempt(
     clearInterval(heartbeat);
   }
   const metrics = progress.metrics();
+  metrics.completedAt = new Date().toISOString();
+  if (result.code !== 0)
+    metrics.terminationReason = result.cancelled ? "cancelled" : result.timedOut ? "timed-out" : metrics.terminationReason ?? "failed";
   if (deepseek) {
     const events: Array<Record<string, unknown>> = [];
     try {
@@ -482,6 +508,8 @@ async function invokeProviderAttempt(
     const final = deepseek
       ? deepseekFinalAnswer(raw, probe || request.station === "intent")
       : undefined;
+    if (request.session?.id && final?.sessionId !== request.session.id)
+      throw new Error("DSH resumed a different session; no candidate accepted.");
     let output: unknown;
     try {
       output = final
@@ -501,6 +529,7 @@ async function invokeProviderAttempt(
       throw error;
     }
     if (deepseek) writeFileSync(answerFile, JSON.stringify(output, null, 2));
+    if (final) request.onSession?.(final.sessionId);
     metrics.actionableOutputMs = metrics.durationMs;
     if (request.config.provider === "claude") {
       const envelope = JSON.parse(result.stdout);
@@ -553,9 +582,11 @@ async function invokeProvider(
     try {
       const output = await invokeProviderAttempt({
         ...request,
+        session: undefined,
+        onSession: undefined,
         runDir,
         timeoutMs: Math.max(1, deadline - Date.now()),
-        prompt: `${request.prompt}\n\nKITCHEN CORRECTIVE REGENERATION (one attempt only)\nYour previous completed final answer violated the JSON/output contract: ${error.detail}\nRegenerate the answer to the original request using the supplied context and recorded human answers. Return exactly one complete JSON object matching the schema, without commentary or Markdown fences. All station boundaries still apply.`,
+        prompt: `${request.freshPrompt ?? request.prompt}\n\nKITCHEN CORRECTIVE REGENERATION (one attempt only)\nYour previous completed final answer violated the JSON/output contract: ${error.detail}\nRegenerate the answer to the original request using the supplied context and recorded human answers. Return exactly one complete JSON object matching the schema, without commentary or Markdown fences. All station boundaries still apply.`,
       }, probe, deadline);
       // Retain both raw attempts; expose only the validated candidate at the
       // usual output paths for existing consumers.

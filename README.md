@@ -109,7 +109,7 @@ kitchen publish completion-notifications
 
 Documents live in the feature worktree at `docs/features/<feature>/`: `intent.md`, `spec.md`, `plan.md` and `test-plan.md`. Each successful document run writes its draft there. `approve <feature> <station>` commits that document on `codex/kitchen/<feature>` after validating the approval gates and any applicable independent review. Each document gets its own commit; unrelated staged files block approval. The main checkout is unchanged.
 
-The CLI shows station status, the absolute document path, the approval commit and the next command. An `awaiting-input` result lists outstanding questions and has no new candidate document. Add `--json` to `start`, `run`, `approve` or `status` for the complete machine-readable state.
+The CLI shows station status, the absolute document path, the approval commit and the next command. An `awaiting-input` result lists outstanding questions and has no new candidate document. Add `--json` to `start`, `run`, `approve` or `status` for the complete machine-readable state. With `run --json` and `approve --json`, next-step guidance goes to stderr so stdout remains valid JSON. Failed runs and rejected approvals also print a next command; use the suggested status command to inspect saved state when no more specific recovery command is available.
 
 Edit documents in the feature worktree. Frontmatter status is descriptive; it never grants approval. Rerun a station after edits so the edited artifact is validated before acceptance, including independent review when enabled. Use `run --feedback-file <path>` to direct revisions. Accepted document/input changes invalidate later approvals while preserving files.
 

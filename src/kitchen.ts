@@ -22,7 +22,7 @@ import {
   validateFeature,
 } from "./domain.ts";
 import { baseBranch, loadConfig } from "./config.ts";
-import { checkDeepSeekPins } from "./deepseek.ts";
+import { checkDeepSeekPins, checkDeepSeekModel } from "./deepseek.ts";
 import { executeChecks, validateCheckPlan } from "./checks.ts";
 import {
   baselineWorktree,
@@ -38,11 +38,13 @@ import {
   cliProvider,
   validateAuthorOutput,
   validateReviewOutput,
+  authorSchemaForStation,
 } from "./providers.ts";
 import { instructions, rubric, stationPrompt } from "./prompts.ts";
 import { buildContext, targetPaths } from "./context.ts";
 import { discover, discoveryPolicy } from "./discovery.ts";
-import { promptSections, runMetrics, timed } from "./metrics.ts";
+import { promptSections, runMetrics, timed, persistMetrics } from "./metrics.ts";
+import { contextPolicyVersion } from "./evidence-bundle.ts";
 import { compactDeepSeek, tokenPromptVersion } from "./token-budget.ts";
 import { executeSetup } from "./setup-runner.ts";
 import { Storage } from "./storage.ts";
@@ -79,6 +81,7 @@ const blank: AuthorOutput = {
   checks: [],
 };
 const manifestHeading = "\n## Kitchen execution manifest\n";
+const sessionPolicyVersion = 1;
 interface RunOptions {
   ask?: (question: string) => Promise<string>;
   feedback?: string;
@@ -170,6 +173,8 @@ export class Kitchen {
     const config = loadConfig(this.root);
     const stationConfig = config.stations[station];
     const policy = {
+      contextPolicyVersion,
+      sessionPolicyVersion,
       tokenPromptVersion: [
         station === "publish"
           ? undefined
@@ -382,7 +387,9 @@ export class Kitchen {
     let context = await timed(
       options.metrics,
       "station context",
-      () => buildContext(state, station, this.root, compactDeepSeek(roleConfig)),
+      () => buildContext(state, station, this.root, compactDeepSeek(roleConfig), {
+        codeFingerprint: before.codeFingerprint, persist: true,
+      }),
       options.onProgress,
     );
     if (station === "plan" && role === "author" && config.discovery?.enabled) {
@@ -440,7 +447,7 @@ export class Kitchen {
       state.worktree,
       state.stations[station]?.artifactFiles ?? [],
     );
-    const prompt = stationPrompt(
+    const fullPrompt = stationPrompt(
       state,
       station,
       role,
@@ -449,6 +456,35 @@ export class Kitchen {
       config.stations[station]?.reviewEnabled,
       compactDeepSeek(roleConfig),
     );
+    const record = state.stations[station]!;
+    const prior = record.authorSession;
+    delete record.authorSession;
+    const reusable = role === "author" && roleConfig.provider === "deepseek" && roleConfig.sessionReuse === "after-input";
+    const modelIdentity = reusable ? await checkDeepSeekModel(roleConfig, 10000, options.signal) : undefined;
+    const sessionFingerprint = (conversationLength: number) => hash(JSON.stringify({
+      contextPolicyVersion, sessionPolicyVersion, station, source: before.fingerprint,
+      model: modelIdentity?.digest, roleConfig, rubric: rubric(station),
+      instructions: instructions(state.worktree, targetPaths(state)),
+      schema: authorSchemaForStation(station),
+      request: state.request, issue: state.issue, base: state.baseCommit,
+      upstream: stationOrder.slice(0, stationOrder.indexOf(station)).map(name => state.stations[name]?.approval?.fingerprint),
+      conversation: state.conversation.slice(0, conversationLength), profiles: config.profiles,
+      preparation: state.preparation, discovery: discoveryPolicy(config),
+    }));
+    const sessionRoot = path.join(this.storage.directory(state.feature), "sessions", station, "author");
+    const resume = reusable && prior !== undefined && prior.fingerprint === sessionFingerprint(prior.conversationLength) &&
+      prior.conversationLength < state.conversation.length &&
+      path.dirname(path.resolve(prior.home)) === sessionRoot && existsSync(prior.home);
+    const session = reusable ? {
+      id: resume ? prior!.id : undefined,
+      home: resume ? prior!.home : path.join(sessionRoot, randomUUID()),
+    } : undefined;
+    if (session) mkdirSync(session.home, { recursive: true });
+    const conversationLength = resume ? prior!.conversationLength : state.conversation.length;
+    const prompt = resume
+      ? `Continue as the author at the ${station} station for ${state.feature}. The runner verified unchanged source, upstream approvals, model, instructions and output contract.\nUse the already supplied repository evidence; do not reread unchanged content.\nDo not write files, execute checks, use git writes, send messages or publish. The runner owns proposals, checks and human approval.\nHuman/model continuation (roles are significant):\n${JSON.stringify(state.conversation.slice(conversationLength))}\nResolve the saved questions using these answers. Return either questions only (document=null and all proposal/manifest arrays empty), or a complete candidate with questions=[]. Return exactly the required JSON object.`
+      : fullPrompt;
+    let sessionId: string | undefined;
     options.metrics?.promptBytes.push({
       role: role + suffix,
       sections: promptSections(prompt),
@@ -469,6 +505,9 @@ export class Kitchen {
           signal: options.signal,
           onProgress: options.onProgress,
           onMetrics: (metrics) => options.metrics?.providers.push(metrics),
+          session,
+          freshPrompt: fullPrompt,
+          onSession: reusable ? (id) => { sessionId = id; } : undefined,
         }),
     );
     if (options.signal?.aborted) throw new Error("Station cancelled.");
@@ -485,6 +524,16 @@ export class Kitchen {
       throw new Error(
         "Provider changed repository contents outside the runner.",
       );
+    if (reusable && sessionId && session) {
+      const validated = validateAuthorOutput(output, station);
+      if (validated.questions.length && validated.document === null &&
+        [validated.files, validated.allowedPaths, validated.unitTestFiles, validated.scaffoldFiles, validated.checks].every(values => !values.length)) {
+        record.authorSession = {
+          id: sessionId, home: session.home, fingerprint: sessionFingerprint(state.conversation.length),
+          conversationLength: state.conversation.length,
+        };
+      }
+    }
     mkdirSync(path.join(runDir, role + suffix), { recursive: true });
     writeFileSync(
       path.join(runDir, role + suffix, "validated-output.json"),
@@ -614,7 +663,11 @@ export class Kitchen {
       this.invalidateAfter(state, station);
       if (docs.includes(station)) delete state.preparation;
       const record = this.record();
+      if (pending?.status === "awaiting-input") record.authorSession = pending.authorSession;
       record.metrics = metrics;
+      metrics.station = station;
+      metrics.runId = record.runId;
+      metrics.status = "running";
       state.stations[station] = record;
       this.storage.save(state);
       const runDir = path.join(
@@ -623,6 +676,8 @@ export class Kitchen {
         record.runId,
       );
       mkdirSync(runDir, { recursive: true });
+      const saveMetrics = persistMetrics(metrics, runDir);
+      const checkpoint = setInterval(saveMetrics, 15000);
       const config = loadConfig(this.root);
       const call = (role: "author" | "review", suffix = "") =>
         this.callProvider(state, station, role, runDir, options, suffix);
@@ -818,17 +873,18 @@ export class Kitchen {
         this.storage.save(state);
         return state;
       } catch (error) {
+        delete record.authorSession;
         record.status = "failed";
         record.error = error instanceof Error ? error.message : String(error);
         this.storage.save(state);
         throw error;
       } finally {
+        clearInterval(checkpoint);
+        metrics.status = record.status;
+        metrics.error = record.error;
         metrics.completedAt = now();
         metrics.durationMs = performance.now() - started - metrics.humanWaitMs;
-        writeFileSync(
-          path.join(runDir, "metrics.json"),
-          JSON.stringify(metrics, null, 2),
-        );
+        saveMetrics();
         this.storage.save(state);
       }
     });
@@ -840,7 +896,7 @@ export class Kitchen {
     record: StationRecord,
   ): Promise<void> {
     if (docs.includes(station)) {
-      if (!output.document || output.files.length)
+      if (!output.document?.trim() || output.files.length)
         throw new Error(
           "Document stations require one document and no source changes.",
         );

@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,44 @@ const invokeCli = (cwd: string, args: string[]) => runProcess({
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, {
   cwd, encoding: "utf8", stdio: "pipe",
 }).trim();
+
+async function workflowFixture() {
+  const root = mkdtempSync(path.join(tmpdir(), "kitchen next step "));
+  git(root, "init", "--initial-branch=main");
+  git(root, "config", "user.name", "Test");
+  git(root, "config", "user.email", "test@example.test");
+  git(root, "commit", "--allow-empty", "-m", "baseline");
+  const init = await invokeCli(root, ["init"]);
+  expect(init.code, init.stderr).toBe(0);
+  git(root, "add", ".");
+  git(root, "commit", "-m", "Kitchen setup");
+
+  const providerDir = mkdtempSync(path.join(tmpdir(), "kitchen cli provider "));
+  const script = path.join(providerDir, "provider.mjs");
+  const responseFile = path.join(providerDir, "response.json");
+  writeFileSync(responseFile, JSON.stringify({
+    summary: "Intent ready", questions: [],
+    document: "# Answer\n## What the product can't do today\nReturn an answer.\n## Who is affected\nLocal callers.\n## What better looks like\nReturn 42.\n## Out of scope\nOther numbers.\n## Constraints\nLocal execution.\n",
+    files: [], allowedPaths: [], unitTestFiles: [], scaffoldFiles: [], checks: [],
+  }));
+  writeFileSync(script, [
+    "import fs from 'node:fs';",
+    "for await (const chunk of process.stdin) {}",
+    "const index = process.argv.indexOf('--output-last-message');",
+    "fs.copyFileSync(new URL('response.json', import.meta.url), process.argv[index + 1]);",
+  ].join("\n"));
+  const executable = path.join(providerDir, process.platform === "win32" ? "provider.cmd" : "provider");
+  writeFileSync(executable, process.platform === "win32"
+    ? `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`
+    : `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`);
+  if (process.platform !== "win32") chmodSync(executable, 0o755);
+  writeFileSync(path.join(root, "kitchen.config.local.json"), JSON.stringify({
+    providers: { author: { provider: "codex", executable } },
+  }));
+  const started = await invokeCli(root, ["start", "answer", "--request", "Return 42."]);
+  expect(started.code, started.stderr).toBe(0);
+  return { root, responseFile };
+}
 
 function fixture(status: "awaiting-input" | "failed" = "awaiting-input") {
   const root = mkdtempSync(path.join(tmpdir(), "kitchen-cli-"));
@@ -77,9 +115,11 @@ describe("CLI workflow pauses", () => {
         ...(json ? ["--json"] : []),
       ]);
       expect(result.code).toBe(0);
-      expect(result.stderr).toBe("");
-      if (json) expect(JSON.parse(result.stdout)).toEqual(state);
-      else {
+      if (json) {
+        expect(JSON.parse(result.stdout)).toEqual(state);
+        expect(result.stderr).toContain("Next: kitchen run answer intent");
+      } else {
+        expect(result.stderr).toBe("");
         expect(result.stdout).toContain("intent: awaiting-input");
         expect(result.stdout).toContain("Who needs the answer?");
         expect(result.stdout).toContain(
@@ -102,6 +142,45 @@ describe("CLI workflow pauses", () => {
     const result = await invoke(["approve", "answer", "intent"]);
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain("not awaiting approval (status: failed)");
+  });
+  it.each([false, true])("shows the next step after run and approve (json: %s)", async (json) => {
+    const { root } = await workflowFixture();
+    const flags = ["--cwd", root, ...(json ? ["--json"] : [])];
+    const run = await invokeCli(root, ["run", "answer", "intent", ...flags]);
+    expect(run.code, run.stderr).toBe(0);
+    const runConsole = json ? run.stderr : run.stdout;
+    expect(runConsole.match(/^Next:/gm)).toHaveLength(1);
+    expect(runConsole).toContain(`Next: kitchen --cwd '${root}' approve answer intent --actor <your-name>`);
+    if (json) expect(JSON.parse(run.stdout).stations.intent.status).toBe("awaiting-approval");
+
+    const approve = await invokeCli(root, ["approve", "answer", "intent", "--actor", "Test", ...flags]);
+    expect(approve.code, approve.stderr).toBe(0);
+    const approveConsole = json ? approve.stderr : approve.stdout;
+    expect(approveConsole.match(/^Next:/gm)).toHaveLength(1);
+    expect(approveConsole).toContain(`Next: kitchen --cwd '${root}' run answer spec`);
+    if (json) expect(JSON.parse(approve.stdout).stations.intent.status).toBe("approved");
+  });
+  it("keeps next-step guidance after a provider failure and a rejected approval", async () => {
+    const { root, responseFile } = await workflowFixture();
+    writeFileSync(responseFile, "invalid provider JSON");
+    const run = await invokeCli(root, ["run", "answer", "intent", "--cwd", root]);
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toContain(`Next: kitchen --cwd '${root}' status answer`);
+
+    const approve = await invokeCli(root, ["approve", "answer", "intent"]);
+    expect(approve.code).not.toBe(0);
+    expect(approve.stderr).toContain("status: failed");
+    expect(approve.stderr.match(/^Next:/gm)).toHaveLength(1);
+    expect(approve.stderr).toContain("Next: kitchen run answer intent");
+  });
+  it("shows how to inspect a ready station after approval is rejected", async () => {
+    const { root } = await workflowFixture();
+    const run = await invokeCli(root, ["run", "answer", "intent"]);
+    expect(run.code, run.stderr).toBe(0);
+    const approve = await invokeCli(root, ["approve", "answer", "intent", "--actor", ""]);
+    expect(approve.code).not.toBe(0);
+    expect(approve.stderr).toContain("Explicit human approver required.");
+    expect(approve.stderr).toContain("Next: kitchen status answer");
   });
 });
 

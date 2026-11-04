@@ -87,6 +87,12 @@ event, and strict JSON matching the station's schema. If a completed final answe
 contains Markdown/prose, malformed JSON, or an invalid output contract, Kitchen
 requests one corrective regeneration in a fresh session using the original
 context and validation feedback. Both attempts share the original timeout.
+Document stations (`intent`, `spec`, `plan`, `test-plan`) require a nonempty
+`document` and `files: []` for candidates, or questions only with no document,
+proposals or manifests. Plan and test-plan candidates retain their manifest
+fields. These constraints are validated before application, so a completed
+implementation proposal at a document station also triggers corrective
+regeneration.
 Kitchen never extracts fenced JSON or relaxes validation. A second invalid answer
 fails with `DSH final answer violated JSON contract`, the session ID, and the raw
 event evidence path. Stream failures, permission/tool denials, incomplete or

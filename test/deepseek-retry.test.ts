@@ -58,6 +58,27 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("DSH bounded contract regeneration", () => {
+  it("resumes only the named session and regenerates with fresh full context", async () => {
+    const req = request();
+    req.session = { id: "session-saved", home: path.join(req.cwd, "session-home") };
+    req.prompt = "Answer delta";
+    req.freshPrompt = "FULL ORIGINAL CONTEXT";
+    const ids: string[] = []; req.onSession = id => ids.push(id);
+    respond(completed("invalid", "session-saved"));
+    respond(completed(JSON.stringify(candidate), "session-corrected"));
+    await cliProvider(req);
+    expect(processMock.mock.calls[0]![0].args).toContain("--session-id");
+    expect(processMock.mock.calls[0]![0].env!.DSH_HOME).toBe(req.session.home);
+    expect(processMock.mock.calls[1]![0].args).not.toContain("--session-id");
+    expect(processMock.mock.calls[1]![0].input).toContain("FULL ORIGINAL CONTEXT");
+    expect(ids).toEqual([]);
+  });
+  it("rejects mismatched resumed identities without regeneration", async () => {
+    const req = request(); req.session = { id: "session-saved", home: path.join(req.cwd, "session-home") };
+    respond(completed(JSON.stringify(candidate), "session-other"));
+    await expect(cliProvider(req)).rejects.toThrow("different session");
+    expect(processMock).toHaveBeenCalledTimes(1);
+  });
   it("strictly rejects the saved final response and regenerates with both attempts preserved", async () => {
     expect(() => parseDeepSeekOutput(savedWire)).toThrow(/DSH final answer violated JSON contract.*session-e02c3461/);
     const req = request();
@@ -100,6 +121,52 @@ describe("DSH bounded contract regeneration", () => {
     respond(completed(JSON.stringify(questions)));
     expect(await cliProvider(req)).toEqual(questions);
     expect(processMock.mock.calls[1]![0].input).toContain("Invalid intent author output");
+  });
+
+  it.each(["spec", "plan", "test-plan"] as const)(
+    "corrects invalid %s candidates before exposing output",
+    async (station) => {
+      const proposal = JSON.parse(savedFinal.text.match(/```json\n([^]*?)\n```/)[1]);
+      const corrected = {
+        ...candidate, document: `# ${station}\nComplete document.`,
+        allowedPaths: station === "plan" ? ["src/answer.ts", "src/answer.test.ts"] : [],
+        unitTestFiles: station === "test-plan" ? ["src/answer.test.ts"] : [],
+      };
+      for (const invalid of [
+        { ...candidate, document: null },
+        { ...candidate, document: " \n\t" },
+        { ...candidate, files: proposal.files },
+        proposal,
+      ]) {
+        const req = { ...request(), station };
+        respond(completed(JSON.stringify(invalid), "session-invalid-document"));
+        respond(completed(JSON.stringify(corrected)), {}, () => {
+          expect(existsSync(path.join(req.runDir, "author-output.json"))).toBe(false);
+          expect(existsSync(path.join(req.runDir, "author-answer.json"))).toBe(false);
+        });
+        expect(await cliProvider(req)).toEqual(corrected);
+        const calls = processMock.mock.calls.slice(-2);
+        expect(calls[1]![0].input).toContain(`Invalid ${station} author output`);
+        expect(calls[1]![0].input).toContain("KITCHEN CORRECTIVE REGENERATION");
+        expect(json(path.join(req.runDir, "author-process.json"))).toHaveProperty("validationError");
+        expect(json(path.join(req.runDir, "author-attempts.json")).status).toBe("completed");
+        expect(json(path.join(req.runDir, "author-output.json"))).toEqual(corrected);
+        expect(json(path.join(req.runDir, "author-schema.json")).properties.files.maxItems).toBe(0);
+      }
+      expect(processMock).toHaveBeenCalledTimes(8);
+    },
+  );
+
+  it("fails a document station after one invalid correction without exposing a candidate", async () => {
+    const req = { ...request(), station: "spec" as const };
+    const invalid = { ...candidate, document: null };
+    respond(completed(JSON.stringify(invalid), "session-spec-invalid"));
+    respond(completed(JSON.stringify(invalid), "session-spec-retry-invalid"));
+    await expect(cliProvider(req)).rejects.toThrow(/Invalid spec author output.*after one corrective regeneration/);
+    expect(processMock).toHaveBeenCalledTimes(2);
+    expect(existsSync(path.join(req.runDir, "author-output.json"))).toBe(false);
+    expect(existsSync(path.join(req.runDir, "contract-retry/author-output.json"))).toBe(false);
+    expect(json(path.join(req.runDir, "author-attempts.json")).status).toBe("failed");
   });
 
   it("stops after one failed correction and reports both sessions and evidence paths", async () => {

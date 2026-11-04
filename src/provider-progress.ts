@@ -1,4 +1,4 @@
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import type { ProviderMetrics, ProviderRequest } from "./types.ts";
@@ -22,7 +22,26 @@ export function providerProgress(request: ProviderRequest, probe = false) {
   writeFileSync(timingsFile, "");
   const pending = { stdout: "", stderr: "" };
   const started = performance.now();
-  const metrics: ProviderMetrics = { durationMs: 0, toolCount: 0 };
+  const metrics: ProviderMetrics = {
+    station: request.station, role: request.role, provider: request.config.provider,
+    model: request.config.model, attempt: path.relative(path.dirname(request.runDir), request.runDir),
+    startedAt: new Date().toISOString(), durationMs: 0, toolCount: 0, spans: [],
+  };
+  const snapshot = (): ProviderMetrics => ({ ...metrics, durationMs: performance.now() - started });
+  const checkpoint = () => {
+    const file = path.join(request.runDir, `${request.role}-live.json`);
+    writeFileSync(file + ".tmp", JSON.stringify(snapshot()));
+    renameSync(file + ".tmp", file);
+  };
+  checkpoint();
+  const span = (kind: "model" | "tool", id: string, elapsedMs: number, complete: boolean, name?: string) => {
+    let entry = metrics.spans!.find(value => value.kind === kind && value.id === id);
+    if (!entry && !complete) {
+      entry = { kind, id, name, startMs: elapsedMs };
+      metrics.spans!.push(entry);
+    }
+    if (entry && complete) entry.durationMs = elapsedMs - entry.startMs;
+  };
   const tools = new Set<string>();
   let deepseekSteps = 0;
   let incompleteUsage = false;
@@ -36,7 +55,6 @@ export function providerProgress(request: ProviderRequest, probe = false) {
     stream: "stdout" | "stderr",
     raw: string,
   ): string | undefined => {
-    if (request.config.provider === "claude") return;
     if (stream === "stderr") {
       if (request.config.provider === "codex" && sandboxFailure.test(raw))
         return `Windows sandbox infrastructure failure: ${raw.trim().slice(-1500)}`;
@@ -64,8 +82,32 @@ export function providerProgress(request: ProviderRequest, probe = false) {
         type: event.type,
         itemType: item?.type,
         itemId: item?.id,
+        at: new Date().toISOString(), station: request.station, role: request.role,
+        provider: request.config.provider, model: request.config.model,
+        phase: event.phase, step: event.step, turn: event.turn,
+        callId: event.callId, tool: event.tool, status: event.status,
+        sessionId: event.sessionId ?? event.thread_id ?? event.session_id,
+        reason: event.reason,
       }) + "\n",
     );
+    const sessionId = event.sessionId ?? event.thread_id ?? event.session_id;
+    if (typeof sessionId === "string") metrics.sessionId = sessionId;
+    if (event.type === "status" && ["step_start", "step_end"].includes(event.phase))
+      span("model", `${event.turn ?? 1}:${event.step}`, elapsedMs, event.phase === "step_end");
+    if (event.type === "tool_call" || event.type === "tool_result")
+      span("tool", String(event.callId), elapsedMs, event.type === "tool_result", event.tool);
+    if (event.type === "turn.started" || event.type === "turn.completed" || event.type === "turn.failed")
+      span("model", "turn", elapsedMs, event.type !== "turn.started");
+    if (["command_execution", "mcp_tool_call"].includes(item?.type))
+      span("tool", String(item.id), elapsedMs, event.type === "item.completed", item.type);
+    if (event.type === "final") metrics.terminationReason = event.reason?.kind ?? "unknown";
+    if (event.type === "turn.completed") metrics.terminationReason = "completed";
+    if (event.type === "turn.failed" || event.type === "error") metrics.terminationReason = "failed";
+    checkpoint();
+    if (request.config.provider === "claude") {
+      metrics.terminationReason = event.is_error ? "failed" : event.stop_reason ?? "completed";
+      return;
+    }
     if (request.config.provider === "deepseek") {
       const failure = deepseekEventFailure(event, probe || request.station === "intent");
       if (failure) return failure;
@@ -140,8 +182,9 @@ export function providerProgress(request: ProviderRequest, probe = false) {
   };
   return {
     report,
+    checkpoint,
     metrics(): ProviderMetrics {
-      return { ...metrics, durationMs: performance.now() - started };
+      return snapshot();
     },
     capture(stream: "stdout" | "stderr", chunk: string): string | undefined {
       // Persist before notifying the terminal or stopping the process.
@@ -150,7 +193,11 @@ export function providerProgress(request: ProviderRequest, probe = false) {
       const lines = pending[stream].split(/\r?\n/);
       pending[stream] = lines.pop()!;
       let failure: string | undefined;
-      for (const raw of lines) failure ??= line(stream, raw);
+      for (const raw of lines) {
+        const result = line(stream, raw);
+        failure ??= result;
+      }
+      checkpoint();
       // stderr may emit a complete error without a trailing newline.
       if (stream === "stderr") failure ??= line(stream, pending.stderr);
       return failure;

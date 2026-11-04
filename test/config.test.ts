@@ -276,4 +276,11 @@ describe("machine-local Kitchen configuration", () => {
       timeoutMs: 600000,
     });
   });
+  it("merges discovery roles and rejects unsupported session reuse", () => {
+    const root = fixture({ discovery: { enabled: true, author: { provider: "claude", model: "reader" } } },
+      { discovery: { author: { executable: "reader-cli" } } });
+    expect(loadConfig(root).discovery).toEqual({ enabled: true, author: { provider: "claude", model: "reader", executable: "reader-cli" } });
+    expect(() => loadConfig(fixture({ providers: { author: { provider: "codex", sessionReuse: "after-input" } } }))).toThrow(/provider configuration/);
+    expect(loadConfig(fixture({ providers: { author: { provider: "claude", sessionReuse: "never" } } })).providers.author.sessionReuse).toBe("never");
+  });
 });

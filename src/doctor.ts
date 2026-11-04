@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.ts";
+import { discoveryAuthor } from "./discovery.ts";
 import { stationOrder } from "./domain.ts";
 import { runProcess } from "./process.ts";
 import { probeProvider } from "./providers.ts";
@@ -72,8 +73,8 @@ export async function doctor(
   }
   if (config.discovery?.enabled)
     addPair(
-      config.stations.plan?.author ?? config.providers.author,
-      config.stations.plan?.author ? "stations.plan.author" : "providers.author",
+      discoveryAuthor(config),
+      config.discovery.author ? "discovery.author" : config.stations.plan?.author ? "stations.plan.author" : "providers.author",
       "discovery",
     );
   const claudeRoles: Array<{
@@ -94,6 +95,7 @@ export async function doctor(
     for (const station of stationOrder)
       addClaudeRole(config.stations[station]?.[role], `stations.${station}.${role}`);
   }
+  addClaudeRole(config.discovery?.author, "discovery.author");
   const claudeRequired = claudeRoles.some(role => role.active);
   const configSources = ["kitchen.config.json", "kitchen.config.local.json"]
     .map(file => path.join(root, file))

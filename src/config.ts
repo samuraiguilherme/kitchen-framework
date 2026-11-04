@@ -91,6 +91,12 @@ export function loadConfig(
     },
     stations: { ...shared.stations, ...local.stations },
     profiles: { ...shared.profiles, ...local.profiles },
+    discovery: shared.discovery || local.discovery ? {
+      ...shared.discovery, ...local.discovery,
+      ...(local.discovery?.author ? { author: mergeRole(
+        shared.discovery?.author ?? configDiscoveryFallback(shared, local), local.discovery.author,
+      ) } : {}),
+    } : undefined,
   };
   for (const station of stationOrder) {
     const overrides = local.stations?.[station];
@@ -117,6 +123,9 @@ export function loadConfig(
       (value.executable !== undefined &&
         (typeof value.executable !== "string" || !value.executable.trim())) ||
       (value.dsh !== undefined && value.provider !== "deepseek") ||
+      (value.sessionReuse !== undefined &&
+        (!["never", "after-input"].includes(value.sessionReuse) ||
+          (value.sessionReuse === "after-input" && value.provider !== "deepseek"))) ||
       (value.windowsSandbox !== undefined &&
         (value.provider !== "codex" ||
           !["elevated", "unelevated"].includes(value.windowsSandbox)))
@@ -153,7 +162,12 @@ export function loadConfig(
         typeof config.discovery.enabled !== "boolean"))
   )
     throw new Error("Discovery enabled must be a boolean.");
+  if (config.discovery?.author) role(config.discovery.author);
   return config;
+}
+function configDiscoveryFallback(shared: Partial<Config>, local: Partial<Config>): RoleConfig {
+  return local.stations?.plan?.author ?? shared.stations?.plan?.author ??
+    mergeRole(mergeRole({ provider: "codex" }, shared.providers?.author), local.providers?.author);
 }
 function validateProfile(name: string, value: Profile): void {
   if (

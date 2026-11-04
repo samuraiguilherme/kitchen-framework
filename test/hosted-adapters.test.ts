@@ -80,7 +80,7 @@ describe("hosted CLI adapters with fake executables", () => {
   it.each([false, true])("accepts complete Claude author proposals and questions (questions=%s)", async (questions) => {
     const response = {
       summary: "Candidate", questions: questions ? [{ id: "scope", text: "Which users?" }] : [],
-      document: questions ? null : "# Plan\nComplete document\n",
+      document: null,
       files: questions ? [] : [
         { path: "src/a.ts", action: "write", content: "export const a = 42;\n", kind: "implementation" },
         { path: "src/b.ts", action: "write", content: "export { a } from './a';\n", kind: "implementation" },
@@ -88,7 +88,7 @@ describe("hosted CLI adapters with fake executables", () => {
     };
     const { root, file } = executable(false, "", response);
     const prompt = "Author\n$() & literal text";
-    const result = await hostedProvider({ station: "plan", role: "author", prompt, cwd: root, runDir: path.join(root, "run"), timeoutMs: 10000, config: { provider: "claude", executable: file, model: "model & literal" } });
+    const result = await hostedProvider({ station: "implementation", role: "author", prompt, cwd: root, runDir: path.join(root, "run"), timeoutMs: 10000, config: { provider: "claude", executable: file, model: "model & literal" } });
     expect(result).toEqual(response);
     const invocation = JSON.parse(readFileSync(path.join(root, "invocation.json"), "utf8"));
     expect(invocation.prompt).toBe(prompt);
@@ -97,6 +97,36 @@ describe("hosted CLI adapters with fake executables", () => {
     expect(invocation.args).toEqual(expect.arrayContaining(["--safe-mode", "dontAsk", "--strict-mcp-config", "--no-session-persistence", "--disable-slash-commands"]));
     expect(JSON.parse(invocation.args[invocation.args.indexOf("--settings") + 1])).toEqual({ disableAllHooks: true });
     expect(JSON.parse(invocation.args[invocation.args.indexOf("--mcp-config") + 1])).toEqual({ mcpServers: {} });
+  });
+
+  it.each(["codex", "claude"] as const)("enforces document contracts through the %s adapter", async (provider) => {
+    for (const station of ["spec", "plan", "test-plan"] as const) {
+      const document = {
+        summary: "Document candidate", questions: [], document: `# ${station}\nComplete document.`,
+        files: [], allowedPaths: station === "plan" ? ["src/a.ts"] : [],
+        unitTestFiles: station === "test-plan" ? ["src/a.test.ts"] : [], scaffoldFiles: [], checks: [],
+      };
+      const { root, file } = executable(false, "", document);
+      const req = { station, role: "author" as const, prompt: "Author document", cwd: root,
+        runDir: path.join(root, "run"), timeoutMs: 10000, config: { provider, executable: file } };
+      expect(await hostedProvider(req)).toEqual(document);
+      const schema = JSON.parse(readFileSync(path.join(req.runDir, "author-schema.json"), "utf8"));
+      expect(schema.properties.files.maxItems).toBe(0);
+      expect(schema.anyOf).toBeUndefined();
+      for (const invalid of [
+        { ...document, document: null },
+        { ...document, document: " \n\t" },
+        { ...document, files: [{ path: "src/a.ts", action: "write", content: "export const a = 42;", kind: "implementation" }] },
+      ]) {
+        const bad = executable(false, "", invalid);
+        const runDir = path.join(bad.root, "run");
+        await expect(hostedProvider({ ...req, cwd: bad.root, runDir,
+          config: { provider, executable: bad.file } })).rejects.toThrow(`Invalid ${station} author output`);
+        expect(JSON.parse(readFileSync(path.join(runDir, "author-process.json"), "utf8")))
+          .toHaveProperty("validationError", expect.stringContaining(`Invalid ${station} author output`));
+        expect(existsSync(path.join(runDir, "author-output.json"))).toBe(false);
+      }
+    }
   });
 
   it("accepts Claude discovery citations through the executable boundary", async () => {

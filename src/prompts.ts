@@ -10,7 +10,7 @@ export function rubric(station: Station): string {
     "utf8",
   );
 }
-export function instructions(root: string, paths: string[] = []): string {
+export function instructionFiles(root: string, paths: string[] = []): string[] {
   const files = new Set(["AGENTS.md", "CLAUDE.md"]);
   for (const file of paths) {
     let parent = path.dirname(file);
@@ -20,8 +20,10 @@ export function instructions(root: string, paths: string[] = []): string {
       parent = path.dirname(parent);
     }
   }
-  return [...files]
-    .filter((file) => existsSync(path.join(root, file)))
+  return [...files].filter((file) => existsSync(path.join(root, file)));
+}
+export function instructions(root: string, paths: string[] = []): string {
+  return instructionFiles(root, paths)
     .map(
       (file) => `FILE ${file}\n${readFileSync(path.join(root, file), "utf8")}`,
     )
@@ -70,7 +72,7 @@ ${rubric(station)}
 Station boundaries:
 - intent/spec/plan/test-plan: return a self-contained document, no source file proposals.
 - plan/test-plan: distinguish executable runtime preparation from minimal interface scaffolds. Dependency manifests/lockfiles, test runtime configuration/setup and existing check scripts belong to exact allowedPaths and the documented operator preparation step, not throw-only scaffoldFiles. The operator uses kitchen prepare to record their snapshots, configured setup/check evidence and accepted document revisions before unit-test authoring.
-- plan: list exact repository-relative allowedPaths (including tests and planned integration/browser test files), grounded in actual code and target AGENTS.md/CLAUDE.md. Reference test-plan.md.
+- plan: list exact repository-relative allowedPaths (including tests and planned integration/browser test files), grounded in actual code and target AGENTS.md/CLAUDE.md. Name the future test-plan.md handoff; it is authored at the next station and need not exist yet.
 - test-plan: return checks referencing configured profile IDs; no arbitrary commands. Generate unique lowercase kebab-case check IDs (e.g. backend-purchases, manual-browser), and use them consistently in the document and checks. Specify unitTestFiles and scaffoldFiles as exact subsets of accepted allowedPaths. New-behavior unit checks use expectation red; preservation checks green. Include rationale for existing test changes and mocks.
 - test-plan: the document MUST include these exact level-two headings with concrete, nonempty content: "## Acceptance coverage", "## Unit tests", "## Regression", "## Required evidence". Keep these headings even when reorganizing the template; do not rename them or add suffixes such as "and blockers". Under Regression, name existing suites/contracts to preserve and their GREEN checks. Under Required evidence, specify nonzero executed tests, per-criterion behavioral RED then final GREEN, source fingerprints, and actual database/provider/browser/manual observations where applicable. Explain N/A rather than omitting a required section.
 - unit-tests: propose unit tests first, and only accepted minimal scaffoldFiles if necessary to reach behavioral assertions. No feature logic. Name tests with stable AC-n IDs. Minimal scaffolds may contain signatures/types and throw-only bodies.

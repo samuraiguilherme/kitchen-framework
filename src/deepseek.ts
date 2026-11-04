@@ -188,7 +188,7 @@ export function prepareDeepSeek(
 ) {
   const options = validateDeepSeekConfig(request.config);
   const runDir = path.resolve(request.runDir);
-  const home = path.join(runDir, `${request.role}-dsh-home`);
+  const home = request.session?.home ?? path.join(runDir, `${request.role}-dsh-home`);
   mkdirSync(home, { recursive: true });
   const noTools = probe || request.station === "intent";
   const allowTools = noTools ? [] : readTools;
@@ -308,6 +308,7 @@ export function prepareDeepSeek(
       "read-only",
       "--approval-policy",
       "never",
+      ...(request.session?.id ? ["--session-id", request.session.id] : []),
       "-",
     ],
     env: {

@@ -21,6 +21,46 @@ const author = {
 const review = { summary: "Review", findings: [] };
 
 describe("provider contracts", () => {
+  it.each(["spec", "plan", "test-plan"] as const)(
+    "requires a nonempty document and no source proposals at %s",
+    (station) => {
+      const document = { ...author, document: `# ${station}\nComplete document.` };
+      const questions = {
+        ...author,
+        document: null,
+        questions: [{ id: "audience", text: "Who is affected?" }],
+      };
+      expect(validateAuthorOutput(document, station)).toEqual(document);
+      expect(validateAuthorOutput(questions, station)).toEqual(questions);
+      const files = [{
+        path: "src/answer.ts", action: "write", content: "export const answer = 42;", kind: "implementation",
+      }];
+      for (const output of [
+        { ...document, document: null },
+        { ...document, document: "" },
+        { ...document, document: " \n\t" },
+        { ...document, files },
+        { ...document, document: null, files },
+        { ...questions, document: "Unresolved draft" },
+        { ...questions, files },
+        { ...questions, allowedPaths: ["src/answer.ts"] },
+      ]) {
+        expect(validateAuthorOutput(output)).toEqual(output);
+        expect(() => validateAuthorOutput(output, station)).toThrow(`Invalid ${station} author output`);
+      }
+    },
+  );
+
+  it("preserves plan and test-plan manifests in document candidates", () => {
+    const plan = { ...author, allowedPaths: ["src/answer.ts", "src/answer.test.ts"] };
+    const testPlan = {
+      ...author, unitTestFiles: ["src/answer.test.ts"], scaffoldFiles: ["src/answer.ts"],
+      checks: [{ id: "answer", profile: "unit", files: ["src/answer.test.ts"], acIds: ["AC-1"], required: true, expectation: "red" }],
+    };
+    expect(validateAuthorOutput(plan, "plan")).toEqual(plan);
+    expect(validateAuthorOutput(testPlan, "test-plan")).toEqual(testPlan);
+  });
+
   it("accepts questions or a nonempty intent document and rejects implementation metadata", () => {
     expect(validateAuthorOutput(author, "intent")).toEqual(author);
     const questions = { ...author, document: null, questions: [{ id: "audience", text: "Who is affected?" }] };

@@ -1,5 +1,19 @@
 import { performance } from "node:perf_hooks";
 import type { RunMetrics } from "./types.ts";
+import { writeFileSync, renameSync } from "node:fs";
+import path from "node:path";
+
+const checkpoints = new WeakMap<RunMetrics, () => void>();
+export function persistMetrics(metrics: RunMetrics, directory: string): () => void {
+  const save = () => {
+    const file = path.join(directory, "metrics.json");
+    writeFileSync(file + ".tmp", JSON.stringify(metrics, null, 2));
+    renameSync(file + ".tmp", file);
+  };
+  checkpoints.set(metrics, save);
+  save();
+  return save;
+}
 
 export function runMetrics(): RunMetrics {
   return {
@@ -23,6 +37,7 @@ export async function timed<T>(
     return await action();
   } finally {
     metrics?.phases.push({ phase, durationMs: performance.now() - started });
+    if (metrics) checkpoints.get(metrics)?.();
   }
 }
 
