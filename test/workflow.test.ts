@@ -724,7 +724,7 @@ describe("station workflow", () => {
     );
     await expect(kitchen.run("answer", "spec")).rejects.toThrow(/intent/i);
   });
-  it("pauses for questions without applying a bundled draft or file proposals", async () => {
+  it("rejects intent questions bundled with a draft or implementation proposal before applying changes", async () => {
     const setup = fixture(0, { intent: { reviewEnabled: true } });
     let questioned = false;
     const provider = async (request: {
@@ -763,24 +763,15 @@ describe("station workflow", () => {
     mkdirSync(path.dirname(document), { recursive: true });
     writeFileSync(document, documents.intent!);
 
-    await kitchen.run("answer", "intent");
+    await expect(kitchen.run("answer", "intent")).rejects.toThrow(/Invalid intent author output/);
     const state = await kitchen.status("answer");
-    expect(state.stations.intent?.status).toBe("awaiting-input");
-    expect(state.stations.intent?.output?.questions).toEqual([
-      { id: "audience", text: "Who needs the answer?" },
-    ]);
-    expect(state.conversation).toContainEqual(
-      expect.objectContaining({ role: "model", text: "Who needs the answer?" }),
-    );
+    expect(state.stations.intent?.status).toBe("failed");
+    expect(state.stations.intent?.output).toBeUndefined();
     expect(readFileSync(document, "utf8")).toBe(documents.intent);
     expect(
       readFileSync(path.join(state.worktree, "src/answer.ts"), "utf8"),
     ).toBe("export const answer = 0;\n");
     expect(setup.calls.map((call) => call.role)).toEqual(["author"]);
-    for (const actor of ["chef", ""])
-      await expect(
-        kitchen.approve("answer", "intent", { actor }),
-      ).rejects.toThrow(/intent is awaiting-input.*human answers/i);
 
     const next = await kitchen.run("answer", "intent", {
       feedback: "Company owners",
@@ -885,7 +876,7 @@ describe("station workflow", () => {
     ).rejects.toThrow(/blocking findings/);
   });
   it.each([null, "Unresolved draft; not ready for review."])(
-    "persists human answers separately and asks before authoring (draft: %s)",
+    "requires question-only intent responses before asking for human answers (draft: %s)",
     async (draft) => {
       const setup = fixture();
       let questioned = false;
@@ -919,6 +910,15 @@ describe("station workflow", () => {
         started.worktree,
         "docs/features/answer/intent.md",
       );
+      if (draft !== null) {
+        let asked = false;
+        await expect(kitchen.run("answer", "intent", {
+          ask: async () => { asked = true; return "Company owners"; },
+        })).rejects.toThrow(/Invalid intent author output/);
+        expect(asked).toBe(false);
+        expect(existsSync(document)).toBe(false);
+        return;
+      }
       await kitchen.run("answer", "intent", {
         ask: async () => {
           expect(existsSync(document)).toBe(false);
@@ -1019,7 +1019,7 @@ describe("station workflow", () => {
       }),
     );
   });
-  it("defers a bundled candidate when more questions remain after guided answers", async () => {
+  it("keeps further intent questions pending after guided answers", async () => {
     const setup = fixture();
     let authorCalls = 0;
     const provider = async (request: {
@@ -1036,15 +1036,8 @@ describe("station workflow", () => {
               ? { id: "audience", text: "Who needs the answer?" }
               : { id: "outcome", text: "What outcome do they need?" },
           ],
-          document: "Unresolved draft; not ready for review.",
-          files: [
-            {
-              path: "src/answer.ts",
-              action: "write",
-              content: "export const answer = 42;\n",
-              kind: "implementation",
-            },
-          ],
+          document: null,
+          files: [],
         };
       }
       return setup.provider(request);

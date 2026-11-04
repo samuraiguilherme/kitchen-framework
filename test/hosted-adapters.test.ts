@@ -43,6 +43,28 @@ function executable(probe = false, behavior = "", response?: unknown) {
   return { root, file };
 }
 describe("hosted CLI adapters with fake executables", () => {
+  it.each(["codex", "claude"] as const)("uses the intent schema and disables %s exploration tools", async (provider) => {
+    const response = {
+      summary: "Intent", questions: [], document: "# Intent\nCustomers need an answer.",
+      files: [], allowedPaths: [], unitTestFiles: [], scaffoldFiles: [], checks: [],
+    };
+    const { root, file } = executable(false, "", response);
+    const runDir = path.join(root, "intent");
+    expect(await hostedProvider({ station: "intent", role: "author", prompt: "Capture intent", cwd: root, runDir, timeoutMs: 10000, config: { provider, executable: file } })).toEqual(response);
+    const invocation = JSON.parse(readFileSync(path.join(root, "invocation.json"), "utf8"));
+    const schema = JSON.parse(readFileSync(path.join(runDir, "author-schema.json"), "utf8"));
+    expect(schema.properties.files.maxItems).toBe(0);
+    expect(schema.anyOf).toBeUndefined();
+    expect(schema.properties.document.anyOf).toEqual([
+      { type: "string", pattern: "\\S" }, { type: "null" },
+    ]);
+    if (provider === "claude")
+      expect(invocation.args[invocation.args.indexOf("--tools") + 1]).toBe("");
+    else {
+      expect(invocation.args.join(" ")).toContain("--disable shell_tool");
+      expect(invocation.args.join(" ")).toContain("--disable view_image");
+    }
+  });
   it.each(["author", "discovery"] as const)("probes Claude's %s contract in isolation", async (contract) => {
     const { root, file } = executable(true);
     const runDir = path.join(root, "probe");

@@ -67,7 +67,7 @@ export function providerProgress(request: ProviderRequest, probe = false) {
       }) + "\n",
     );
     if (request.config.provider === "deepseek") {
-      const failure = deepseekEventFailure(event, probe);
+      const failure = deepseekEventFailure(event, probe || request.station === "intent");
       if (failure) return failure;
       if (event.type === "tool_call") {
         metrics.firstToolMs ??= elapsedMs;

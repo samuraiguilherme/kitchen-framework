@@ -75,13 +75,23 @@ with `--offline`; no package or model downloads happen during station execution.
 DSH receives prompts on stdin, uses a separate home/profile for each invocation,
 and can execute only native `read`, `glob`, and `grep`. A required execution
 guard also rejects every other tool, including tools introduced by a later CLI
-version. Model-only probes allow no tools. Kitchen applies file proposals only
+version. Intent author/review calls and model-only probes allow no tools. Intent
+uses only the supplied request, human answers, template, and context. Its author
+schema accepts either questions with `document: null`, or a nonempty document
+with no questions; file proposals, scope, test manifests, and checks must all be
+empty. Kitchen applies file proposals from later stations only
 after its existing validation and workflow gates.
 
 The adapter requires successful process completion, a matching completed final
-event, and strict JSON matching Kitchen's existing schema. Markdown, prose,
-invalid schemas, permission failures, and forbidden-tool attempts fail the run.
-There is no hosted fallback or automatic JSON repair. Local discovery runs
+event, and strict JSON matching the station's schema. If a completed final answer
+contains Markdown/prose, malformed JSON, or an invalid output contract, Kitchen
+requests one corrective regeneration in a fresh session using the original
+context and validation feedback. Both attempts share the original timeout.
+Kitchen never extracts fenced JSON or relaxes validation. A second invalid answer
+fails with `DSH final answer violated JSON contract`, the session ID, and the raw
+event evidence path. Stream failures, permission/tool denials, incomplete or
+truncated generations, token-budget failures, cancellation, and process failures
+remain terminal. There is no hosted fallback. Local discovery runs
 sequentially to limit memory.
 
 Inspect the role's `*-events.jsonl`, `*-stderr.log`, `*-process.json`, generated
@@ -89,6 +99,12 @@ DSH patch, and isolated DSH home under the normal run evidence directory. Eviden
 includes the requested version, local model digest, overlay hash, timings, and
 available usage. DSH telemetry is disabled. Digest pins are checked before model
 requests and before accepting a station.
+
+When regeneration is needed, the original attempt stays in the role's run
+directory and the second attempt has its own prompts, events, token measurements,
+process record, patch, and DSH home under `contract-retry/`. The role's
+`*-attempts.json` records both evidence directories and errors. Only a validated
+candidate is exposed at the usual `*-answer.json` and `*-output.json` paths.
 
 To verify the harness integration without an actual model, prewarm the pinned
 DSH CLI and run the explicit local protocol-fixture check:
@@ -108,7 +124,8 @@ The DeepSeek example enables an opt-in `dsh.tokenPolicy`. Merge that object into
 the selected author or reviewer in `kitchen.config.local.json` to use compact
 context and bounded exploration. Policy changes invalidate affected approvals
 and discovery caches. Remove `tokenPolicy` to restore the previous context and
-unbounded exploration behavior; model-call instrumentation remains available.
+unbounded exploration behavior in later stations; intent always disables tools.
+Model-call instrumentation remains available.
 
 Version 1 defaults to 8 model steps, 12 tool calls, and 32,768 bytes of cumulative
 tool-result content in a model request. It reserves 512 context tokens for safety

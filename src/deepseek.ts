@@ -190,7 +190,8 @@ export function prepareDeepSeek(
   const runDir = path.resolve(request.runDir);
   const home = path.join(runDir, `${request.role}-dsh-home`);
   mkdirSync(home, { recursive: true });
-  const allowTools = probe ? [] : readTools;
+  const noTools = probe || request.station === "intent";
+  const allowTools = noTools ? [] : readTools;
   const maxTokens = generationLimit(request, probe);
   const measurementFile = path.join(runDir, `${request.role}-token-events.jsonl`);
   writeFileSync(measurementFile, "");
@@ -260,14 +261,14 @@ export function prepareDeepSeek(
     {
       id: "tool-fs",
       config: {
-        read: !probe,
+        read: !noTools,
         readImage: false,
         write: false,
         edit: false,
         applyPatch: false,
       },
     },
-    { id: "tool-fs-search", disabled: probe },
+    { id: "tool-fs-search", disabled: noTools },
     {
       insert: [
         {
@@ -324,7 +325,7 @@ export function prepareDeepSeek(
 
 export function deepseekEventFailure(
   event: Record<string, unknown>,
-  probe = false,
+  noTools = false,
 ): string | undefined {
   if (!eventTypes.has(String(event.type)))
     return `Unsupported DSH stream event: ${String(event.type)}`;
@@ -332,7 +333,7 @@ export function deepseekEventFailure(
     return `DSH error: ${String(event.message ?? event.code ?? "unknown error")}`;
   if (
     event.type === "tool_call" &&
-    !(probe ? [] : readTools).includes(String(event.tool))
+    !(noTools ? [] : readTools).includes(String(event.tool))
   )
     return `KITCHEN_TOOL_DENIED: ${String(event.tool)}`;
   if (
@@ -346,7 +347,21 @@ export function deepseekEventFailure(
   }
 }
 
-export function parseDeepSeekOutput(raw: string, probe = false): unknown {
+export class DeepSeekContractError extends Error {
+  constructor(
+    readonly detail: string,
+    readonly sessionId: string,
+    readonly evidencePath?: string,
+  ) {
+    super(`DSH final answer violated JSON contract; session=${sessionId}${evidencePath ? `; evidence=${evidencePath}` : ""}: ${detail}`);
+    this.name = "DeepSeekContractError";
+  }
+}
+
+export function deepseekFinalAnswer(
+  raw: string,
+  noTools = false,
+): { sessionId: string; text: string } {
   let sessionId: string | undefined;
   let final: Record<string, unknown> | undefined;
   for (const line of raw.split(/\r?\n/)) {
@@ -360,7 +375,7 @@ export function parseDeepSeekOutput(raw: string, probe = false): unknown {
     if (!value || typeof value !== "object" || Array.isArray(value))
       throw new Error("Invalid DSH stream event.");
     const event = value as Record<string, unknown>;
-    const failure = deepseekEventFailure(event, probe);
+    const failure = deepseekEventFailure(event, noTools);
     if (failure) throw new Error(failure);
     if (final)
       throw new Error("DSH emitted events after its terminal final event.");
@@ -384,5 +399,16 @@ export function parseDeepSeekOutput(raw: string, probe = false): unknown {
     throw new Error(
       "DSH did not complete a matching session with a final answer.",
     );
-  return JSON.parse(final.text);
+  return { sessionId, text: final.text };
+}
+
+export function parseDeepSeekOutput(raw: string, noTools = false): unknown {
+  const final = deepseekFinalAnswer(raw, noTools);
+  try {
+    return JSON.parse(final.text);
+  } catch (error) {
+    throw new DeepSeekContractError(
+      error instanceof Error ? error.message : String(error), final.sessionId,
+    );
+  }
 }

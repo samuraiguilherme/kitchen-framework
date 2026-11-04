@@ -672,7 +672,7 @@ export class Kitchen {
             options.onProgress,
           );
         }
-        let output = validateAuthorOutput(await call("author"));
+        let output = validateAuthorOutput(await call("author"), station);
         if (output.questions.length) {
           metrics.firstActionableMs ??=
             performance.now() - started - metrics.humanWaitMs;
@@ -704,7 +704,7 @@ export class Kitchen {
             this.storage.save(state);
             return state;
           }
-          output = validateAuthorOutput(await call("author", "-after-answers"));
+          output = validateAuthorOutput(await call("author", "-after-answers"), station);
           if (output.questions.length) {
             for (const q of output.questions)
               state.conversation.push({

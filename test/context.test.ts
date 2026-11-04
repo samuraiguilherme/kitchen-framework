@@ -172,7 +172,7 @@ describe("station-specific context", () => {
     expect(prompt).toContain("Capture product intent only");
     expect(prompt).not.toContain("- implementation:");
     expect(prompt).not.toContain("- unit-tests:");
-    expect(prompt).toContain("Fresh session. Read-only tools.");
+    expect(prompt).toContain("Fresh session. No exploration tools;");
   });
 
   it("keeps selected authoritative documents and compact evidence while excluding full proposals and document diffs", async () => {

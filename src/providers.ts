@@ -18,6 +18,8 @@ import { summarizeTokenEvents } from "./token-budget.ts";
 import { resolveProviderExecutable } from "./provider-executable.ts";
 import {
   checkDeepSeekModel,
+  DeepSeekContractError,
+  deepseekFinalAnswer,
   parseDeepSeekOutput,
   prepareDeepSeek,
 } from "./deepseek.ts";
@@ -28,6 +30,7 @@ import type {
   ProviderRequest,
   ReviewOutput,
   RoleConfig,
+  Station,
 } from "./types.ts";
 
 const str = { type: "string" };
@@ -79,6 +82,32 @@ export const authorSchema = object({
   scaffoldFiles: strings,
   checks: { type: "array", items: checkSchema },
 });
+const intentStructuredSchema = object({
+  ...authorSchema.properties,
+  document: { anyOf: [{ type: "string", pattern: "\\S" }, { type: "null" }] },
+  ...Object.fromEntries(
+    ["files", "allowedPaths", "unitTestFiles", "scaffoldFiles", "checks"].map(
+      (key) => [key, { type: "array", items: str, maxItems: 0 }],
+    ),
+  ),
+});
+export const intentAuthorSchema = {
+  ...intentStructuredSchema,
+  anyOf: [
+    {
+      properties: {
+        questions: { type: "array", minItems: 1 },
+        document: { type: "null" },
+      },
+    },
+    {
+      properties: {
+        questions: { type: "array", maxItems: 0 },
+        document: { type: "string", pattern: "\\S" },
+      },
+    },
+  ],
+};
 export const reviewSchema = object({
   summary: str,
   findings: { type: "array", items: findingSchema },
@@ -97,6 +126,7 @@ export const discoverySchema = object({
 });
 const ajv = new Ajv({ allErrors: true });
 const authorValidator = ajv.compile(authorSchema);
+const intentAuthorValidator = ajv.compile(intentAuthorSchema);
 const reviewValidator = ajv.compile(reviewSchema);
 const discoveryValidator = ajv.compile(discoverySchema);
 export function validateDiscoveryOutput(value: unknown) {
@@ -106,10 +136,14 @@ export function validateDiscoveryOutput(value: unknown) {
     );
   return value as unknown as import("./types.ts").DiscoveryResult;
 }
-export function validateAuthorOutput(value: unknown): AuthorOutput {
-  if (!authorValidator(value))
+export function validateAuthorOutput(
+  value: unknown,
+  station?: Station,
+): AuthorOutput {
+  const validator = station === "intent" ? intentAuthorValidator : authorValidator;
+  if (!validator(value))
     throw new Error(
-      `Invalid author output: ${ajv.errorsText(authorValidator.errors)}`,
+      `Invalid ${station === "intent" ? "intent author" : "author"} output: ${ajv.errorsText(validator.errors)}`,
     );
   return value as unknown as AuthorOutput;
 }
@@ -264,16 +298,23 @@ function processError(provider: ProviderName, result: ProcessResult): string {
     `Exited with code ${result.code}`
   ).slice(-1500);
 }
-async function invokeProvider(
+async function invokeProviderAttempt(
   request: ProviderRequest,
   probe = false,
+  deadline = Date.now() + request.timeoutMs,
 ): Promise<unknown> {
   mkdirSync(request.runDir, { recursive: true });
+  // Hosted structured-output transports prohibit a root anyOf. Keep their
+  // intent fields restricted and enforce the cross-field union locally with
+  // the same validator used for DSH and custom providers.
+  const authorOutputSchema = request.station === "intent" && !probe
+    ? request.config.provider === "deepseek" ? intentAuthorSchema : intentStructuredSchema
+    : authorSchema;
   const schema =
     request.kind === "discovery"
       ? discoverySchema
       : request.role === "author"
-        ? authorSchema
+        ? authorOutputSchema
         : reviewSchema;
   const schemaFile = path.join(request.runDir, `${request.role}-schema.json`);
   const answerFile = path.join(request.runDir, `${request.role}-answer.json`);
@@ -293,11 +334,13 @@ async function invokeProvider(
       request.config.executable,
       request.config.windowsSandbox,
     );
-  if (probe) {
-    if (request.config.provider === "codex")
-      invocation.args.push("--skip-git-repo-check");
-    else if (request.config.provider === "claude")
+  if (probe && request.config.provider === "codex")
+    invocation.args.push("--skip-git-repo-check");
+  if (probe || request.station === "intent") {
+    if (request.config.provider === "claude")
       invocation.args[invocation.args.indexOf("--tools") + 1] = "";
+    else if (request.config.provider === "codex")
+      invocation.args.push("--disable", "shell_tool", "--disable", "view_image");
   }
   const input = deepseek?.input ?? request.prompt;
   writeFileSync(path.join(request.runDir, `${request.role}-prompt.txt`), input);
@@ -318,12 +361,18 @@ async function invokeProvider(
   let result: ProcessResult;
   let modelIdentity: Awaited<ReturnType<typeof checkDeepSeekModel>> | undefined;
   const startedAt = new Date().toISOString();
+  const remainingTimeout = () => {
+    request.signal?.throwIfAborted();
+    const remaining = deadline - Date.now();
+    if (remaining <= 0)
+      throw new DOMException("Provider deadline exceeded.", "TimeoutError");
+    return remaining;
+  };
   try {
-    const started = Date.now();
     if (deepseek) {
       modelIdentity = await checkDeepSeekModel(
         request.config,
-        Math.min(request.timeoutMs, 10000),
+        Math.min(remainingTimeout(), 10000),
         request.signal,
       );
       progress.report(`local model available; digest=${modelIdentity.digest}`);
@@ -334,7 +383,7 @@ async function invokeProvider(
       ...(deepseek ? { env: deepseek.env } : {}),
       cwd: request.cwd,
       input,
-      timeoutMs: Math.max(1, request.timeoutMs - (Date.now() - started)),
+      timeoutMs: remainingTimeout(),
       signal: request.signal,
       onOutput: progress.capture,
     });
@@ -394,6 +443,7 @@ async function invokeProvider(
     startedAt,
     finishedAt: new Date().toISOString(),
     metrics,
+    validationError: undefined as string | undefined,
     ...(deepseek
       ? {
           deepseek: {
@@ -427,13 +477,29 @@ async function invokeProvider(
       request.config.provider === "codex"
         ? readFileSync(answerFile, "utf8")
         : result.stdout;
-    const output =
-      request.config.provider === "deepseek"
-        ? parseDeepSeekOutput(raw, probe)
+    // Stream/session/tool failures are terminal. Only a completed final answer
+    // that fails JSON or output validation is eligible for regeneration.
+    const final = deepseek
+      ? deepseekFinalAnswer(raw, probe || request.station === "intent")
+      : undefined;
+    let output: unknown;
+    try {
+      output = final
+        ? JSON.parse(final.text)
         : parseProviderOutput(request.config.provider, raw);
-    if (request.kind === "discovery") validateDiscoveryOutput(output);
-    else if (request.role === "author") validateAuthorOutput(output);
-    else validateReviewOutput(output);
+      if (request.kind === "discovery") validateDiscoveryOutput(output);
+      else if (request.role === "author")
+        validateAuthorOutput(output, probe ? undefined : request.station);
+      else validateReviewOutput(output);
+    } catch (error) {
+      if (final)
+        throw new DeepSeekContractError(
+          error instanceof Error ? error.message : String(error),
+          final.sessionId,
+          path.resolve(request.runDir, `${request.role}-events.jsonl`),
+        );
+      throw error;
+    }
     if (deepseek) writeFileSync(answerFile, JSON.stringify(output, null, 2));
     metrics.actionableOutputMs = metrics.durationMs;
     if (request.config.provider === "claude") {
@@ -450,9 +516,67 @@ async function invokeProvider(
       JSON.stringify(output, null, 2),
     );
     return output;
+  } catch (error) {
+    processEvidence.validationError =
+      error instanceof Error ? error.message : String(error);
+    throw error;
   } finally {
     saveProcess();
     request.onMetrics?.(metrics);
+  }
+}
+async function invokeProvider(
+  request: ProviderRequest,
+  probe = false,
+): Promise<unknown> {
+  const deadline = Date.now() + request.timeoutMs;
+  try {
+    return await invokeProviderAttempt(request, probe, deadline);
+  } catch (error) {
+    if (!(error instanceof DeepSeekContractError)) throw error;
+    const remaining = deadline - Date.now();
+    if (request.signal?.aborted || remaining <= 0) throw error;
+    const runDir = path.join(request.runDir, "contract-retry");
+    const attempts = {
+      status: "regenerating",
+      timeoutMs: request.timeoutMs,
+      original: { runDir: path.resolve(request.runDir), error: error.message },
+      retry: { runDir: path.resolve(runDir), error: undefined as string | undefined },
+    };
+    const saveAttempts = () =>
+      writeFileSync(
+        path.join(request.runDir, `${request.role}-attempts.json`),
+        JSON.stringify(attempts, null, 2),
+      );
+    saveAttempts();
+    request.onProgress?.(`DSH final answer violated JSON contract; regenerating once; session=${error.sessionId}; evidence=${error.evidencePath}`);
+    try {
+      const output = await invokeProviderAttempt({
+        ...request,
+        runDir,
+        timeoutMs: Math.max(1, deadline - Date.now()),
+        prompt: `${request.prompt}\n\nKITCHEN CORRECTIVE REGENERATION (one attempt only)\nYour previous completed final answer violated the JSON/output contract: ${error.detail}\nRegenerate the answer to the original request using the supplied context and recorded human answers. Return exactly one complete JSON object matching the schema, without commentary or Markdown fences. All station boundaries still apply.`,
+      }, probe, deadline);
+      // Retain both raw attempts; expose only the validated candidate at the
+      // usual output paths for existing consumers.
+      for (const suffix of ["answer", "output"])
+        writeFileSync(
+          path.join(request.runDir, `${request.role}-${suffix}.json`),
+          JSON.stringify(output, null, 2),
+        );
+      attempts.status = "completed";
+      return output;
+    } catch (retryError) {
+      attempts.status = "failed";
+      attempts.retry.error =
+        retryError instanceof Error ? retryError.message : String(retryError);
+      throw new Error(
+        `${attempts.retry.error} (after one corrective regeneration; original failure: ${error.message})`,
+        { cause: retryError },
+      );
+    } finally {
+      saveAttempts();
+    }
   }
 }
 export const cliProvider: Provider = async (request) => {
@@ -460,7 +584,7 @@ export const cliProvider: Provider = async (request) => {
   return request.kind === "discovery"
     ? validateDiscoveryOutput(output)
     : request.role === "author"
-      ? validateAuthorOutput(output)
+      ? validateAuthorOutput(output, request.station)
       : validateReviewOutput(output);
 };
 // Existing integrations can retain this name while migrating to local providers.

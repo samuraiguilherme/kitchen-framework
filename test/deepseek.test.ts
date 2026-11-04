@@ -55,7 +55,7 @@ const ndjson = (events: unknown[]) =>
 function request(): ProviderRequest {
   const root = mkdtempSync(path.join(tmpdir(), "kitchen dsh "));
   return {
-    station: "intent",
+    station: "spec",
     role: "review",
     prompt: 'Literal $() & "prompt"\nnext line',
     cwd: root,
@@ -237,6 +237,26 @@ describe("DeepSeek headless contract", () => {
         .find((r: { id: string }) => r.id === "kitchen-read-only").config
         .allowTools,
     ).toEqual([]);
+  });
+
+  it.each(["author", "review"] as const)("removes exploration tools and guards intent %s calls", (role) => {
+    const req = { ...request(), station: "intent" as const, role };
+    const invocation = prepareDeepSeek(req, {});
+    const rows = parse(readFileSync(invocation.overlayFile, "utf8"));
+    expect(rows.find((r: { id: string }) => r.id === "tool-fs").config.read).toBe(false);
+    expect(rows.find((r: { id: string }) => r.id === "tool-fs-search").disabled).toBe(true);
+    const guardConfig = rows.flatMap((r: { insert?: unknown[] }) => r.insert ?? [])
+      .find((r: { id: string }) => r.id === "kitchen-read-only").config;
+    expect(guardConfig.allowTools).toEqual([]);
+    mkdirSync(req.runDir, { recursive: true });
+    const progress = providerProgress(req);
+    expect(progress.capture("stdout", ndjson([
+      { type: "session", sessionId: "intent-tools" },
+      { type: "tool_call", callId: "r", tool: "read" },
+    ]) + "\n")).toContain("KITCHEN_TOOL_DENIED");
+    expect(() => parseDeepSeekOutput(ndjson([
+      transcript()[0], { type: "tool_call", callId: "r", tool: "grep" }, transcript()[2],
+    ]), true)).toThrow(/KITCHEN_TOOL_DENIED/);
   });
 
   it("enforces the guard before execution even for future tool names", async () => {

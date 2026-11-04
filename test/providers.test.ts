@@ -6,6 +6,7 @@ import {
   validateReviewOutput,
 } from "../src/providers.ts";
 import { runProcess } from "../src/process.ts";
+import { readFileSync } from "node:fs";
 
 const author = {
   summary: "Invitations",
@@ -20,6 +21,34 @@ const author = {
 const review = { summary: "Review", findings: [] };
 
 describe("provider contracts", () => {
+  it("accepts questions or a nonempty intent document and rejects implementation metadata", () => {
+    expect(validateAuthorOutput(author, "intent")).toEqual(author);
+    const questions = { ...author, document: null, questions: [{ id: "audience", text: "Who is affected?" }] };
+    expect(validateAuthorOutput(questions, "intent")).toEqual(questions);
+    const invalid = [
+      { ...author, document: null }, { ...author, document: "" }, { ...author, document: " \n\t" },
+      { ...questions, document: "Unresolved draft" },
+    ];
+    for (const output of invalid)
+      expect(() => validateAuthorOutput(output, "intent")).toThrow(/Invalid intent author output/);
+    const forbidden = {
+      files: [{ path: "src/answer.ts", action: "write", content: "export const answer = 42;", kind: "implementation" }],
+      allowedPaths: ["src/answer.ts"], unitTestFiles: ["src/answer.test.ts"], scaffoldFiles: ["src/answer.ts"],
+      checks: [{ id: "answer", profile: "unit", files: ["src/answer.test.ts"], acIds: ["AC-1"], required: true, expectation: "red" }],
+    };
+    for (const [key, value] of Object.entries(forbidden)) {
+      const output = { ...author, [key]: value };
+      expect(validateAuthorOutput(output)).toEqual(output);
+      expect(() => validateAuthorOutput(output, "intent")).toThrow(/Invalid intent author output/);
+    }
+  });
+
+  it("rejects the saved notice-banner proposal even after removing its prose and fences", () => {
+    const event = JSON.parse(readFileSync(new URL("./fixtures/dsh-intent-invalid-final.json", import.meta.url), "utf8"));
+    const embedded = JSON.parse(event.text.match(/```json\n([^]*?)\n```/)[1]);
+    expect(validateAuthorOutput(embedded)).toEqual(embedded);
+    expect(() => validateAuthorOutput(embedded, "intent")).toThrow(/Invalid intent author output/);
+  });
   it.each(["unelevated", "elevated"] as const)(
     "selects the %s Windows implementation while retaining read-only policy",
     (mode) => {

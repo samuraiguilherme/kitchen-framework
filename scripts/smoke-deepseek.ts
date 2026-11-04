@@ -10,6 +10,10 @@ import { cliProvider, probeProvider } from "../src/providers.ts";
 const version = process.argv[2] ?? "0.2.2-alpha.3";
 const root = mkdtempSync(path.join(tmpdir(), "kitchen-dsh-smoke-"));
 const marker = "KITCHEN_DSH_READ_CONFIRMED";
+const intent = {
+  summary: "DSH intent OK", questions: [], document: "# Intent\nCustomers need a clearer notice.",
+  files: [], allowedPaths: [], unitTestFiles: [], scaffoldFiles: [], checks: [],
+};
 writeFileSync(path.join(root, "proof.txt"), marker);
 let requests = 0;
 let mode = "read";
@@ -42,7 +46,7 @@ const server = createServer(async (req, res) => {
       (request.tools ?? [])
         .map((tool: { function: { name: string } }) => tool.function.name)
         .sort(),
-      mode === "probe" ? [] : ["glob", "grep", "read"],
+      ["probe", "intent"].includes(mode) ? [] : ["glob", "grep", "read"],
     );
     requests++;
     const first = ["read", "loop"].includes(mode) && taskRequests++ === 0;
@@ -90,7 +94,7 @@ const server = createServer(async (req, res) => {
             }
           : {
               role: "assistant",
-              content: JSON.stringify({
+              content: JSON.stringify(mode === "intent" ? intent : {
                 summary:
                   mode === "probe" ? "Kitchen model probe OK" : "DSH smoke OK",
                 findings: [],
@@ -123,7 +127,7 @@ try {
     },
   };
   const output = await cliProvider({
-    station: "intent",
+    station: "spec",
     role: "review",
     cwd: root,
     runDir: path.join(root, "run"),
@@ -146,6 +150,14 @@ try {
   assert.ok(evidence.metrics.tokens.adapterInputBytes > evidence.metrics.tokens.kitchenPromptBytes);
   assert.ok(evidence.metrics.tokens.steps[0].sectionBytes.tools > 0);
   assert.ok(evidence.metrics.tokens.toolResultBytes > 0);
+  mode = "intent";
+  assert.deepEqual(await cliProvider({
+    station: "intent", role: "author", cwd: root, runDir: path.join(root, "intent"),
+    timeoutMs: 60000, prompt: "Capture product intent using only supplied context.", config,
+  }), intent);
+  const intentEvidence = JSON.parse(readFileSync(path.join(root, "intent/author-process.json"), "utf8"));
+  assert.equal(intentEvidence.metrics.toolCount, 0);
+  assert.equal(intentEvidence.metrics.tokens.modelSteps, 1);
   mode = "probe";
   const capped = { ...config, dsh: { ...config.dsh, tokenPolicy: { version: 1 as const, outputTokens: { probe: 256, review: 512 } } } };
   expectedCap = 256;
@@ -154,7 +166,7 @@ try {
   mode = "deny";
   await assert.rejects(
     cliProvider({
-      station: "intent",
+      station: "spec",
       role: "review",
       cwd: root,
       runDir: path.join(root, "denied"),
@@ -175,18 +187,18 @@ try {
   assert.equal(requests - beforeLoop, 1);
   mode = "truncate";
   expectedCap = 512;
-  await assert.rejects(cliProvider({ station: "intent", role: "review", cwd: root,
+  await assert.rejects(cliProvider({ station: "spec", role: "review", cwd: root,
     runDir: path.join(root, "truncated"), timeoutMs: 60000, prompt: "Return review JSON.", config: capped,
   }), /max-tokens|incomplete|length/i);
   const beforeOversized = requests;
-  await assert.rejects(cliProvider({ station: "intent", role: "review", cwd: root,
+  await assert.rejects(cliProvider({ station: "spec", role: "review", cwd: root,
     runDir: path.join(root, "oversized"), timeoutMs: 60000, prompt: "Required document ".repeat(1000),
     config: { ...config, dsh: { ...config.dsh, tokenPolicy: { version: 1, maxInputBytes: 256 } } },
   }), /input .* bytes exceeds/);
   assert.equal(requests, beforeOversized);
   mode = "no-usage";
   expectedCap = 2048;
-  await cliProvider({ station: "intent", role: "review", cwd: root,
+  await cliProvider({ station: "spec", role: "review", cwd: root,
     runDir: path.join(root, "no-usage"), timeoutMs: 60000, prompt: "Return review JSON.", config,
   });
   const unknownUsage = JSON.parse(readFileSync(path.join(root, "no-usage/review-process.json"), "utf8"));
@@ -194,7 +206,7 @@ try {
   assert.equal(unknownUsage.metrics.tokens.totalTokens, undefined);
   assert.equal(unknownUsage.metrics.usage, undefined);
   console.log(
-    `DSH ${version}: profile, read-only catalogue, file read, wire output caps, no-tools probe, forbidden-write rejection, token accounting, step/byte limits, and truncated-output rejection passed. Evidence: ${root}`,
+    `DSH ${version}: profile, read-only catalogue, file read, no-tools intent, wire output caps, no-tools probe, forbidden-write rejection, token accounting, step/byte limits, and truncated-output rejection passed. Evidence: ${root}`,
   );
 } finally {
   server.closeAllConnections();

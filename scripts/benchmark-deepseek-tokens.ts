@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { buildContext } from "../src/context.ts";
 import { stationPrompt } from "../src/prompts.ts";
 import { checkDeepSeekModel, deepseekSetupRole, prepareDeepSeek, validateDeepSeekConfig } from "../src/deepseek.ts";
-import { authorSchema, cliProvider, reviewSchema } from "../src/providers.ts";
+import { authorSchema, cliProvider, intentAuthorSchema, reviewSchema } from "../src/providers.ts";
 import { sourceSnapshot, git } from "../src/git.ts";
 import { lintDocument } from "../src/domain.ts";
 import type { AuthorOutput, FeatureState, ProviderMetrics, RoleConfig, Station, StationRecord } from "../src/types.ts";
@@ -166,7 +166,9 @@ for (const item of cases) {
       const prompt = stationPrompt(state, item.station, item.role, context, item.feedback, true, compact);
       const config: RoleConfig = { ...role, dsh: { ...role.dsh!, ...(compact ? { tokenPolicy: { version: 1, maxSteps: 8, maxToolCalls: 12, ...(item.resource ? { maxInputBytes: 16384 } : {}) } } : {}) } };
       const request = { station: item.station, role: item.role, cwd: fixture, runDir, prompt, timeoutMs, config };
-      const invocation = prepareDeepSeek(request, item.role === "review" ? reviewSchema : authorSchema);
+      const schema = item.role === "review" ? reviewSchema
+        : item.station === "intent" ? intentAuthorSchema : authorSchema;
+      const invocation = prepareDeepSeek(request, schema);
       const sample: Record<string, unknown> = { id: item.id, station: item.station, role: item.role, mode, iteration: iteration + 1, resource: !!item.resource, promptBytes: Buffer.byteLength(prompt), adapterInputBytes: Buffer.byteLength(invocation.input), promptHash: createHash("sha256").update(prompt).digest("hex"), usageComplete: false };
       const metrics: ProviderMetrics[] = [];
       if (values.live) {
