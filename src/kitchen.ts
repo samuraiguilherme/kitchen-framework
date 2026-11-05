@@ -22,6 +22,7 @@ import {
   validateFeature,
 } from "./domain.ts";
 import { baseBranch, loadConfig } from "./config.ts";
+import { approvalFingerprint } from "./approval-fingerprint.ts";
 import { checkDeepSeekPins, checkDeepSeekModel } from "./deepseek.ts";
 import { executeChecks, validateCheckPlan } from "./checks.ts";
 import {
@@ -45,7 +46,7 @@ import { buildContext, targetPaths } from "./context.ts";
 import { discover, discoveryPolicy } from "./discovery.ts";
 import { promptSections, runMetrics, timed, persistMetrics } from "./metrics.ts";
 import { contextPolicyVersion } from "./evidence-bundle.ts";
-import { compactDeepSeek, tokenPromptVersion } from "./token-budget.ts";
+import { compactDeepSeek } from "./token-budget.ts";
 import { executeSetup } from "./setup-runner.ts";
 import { Storage } from "./storage.ts";
 import { normalizeTestPlan } from "./test-plan.ts";
@@ -174,18 +175,6 @@ export class Kitchen {
     const config = loadConfig(this.root);
     const stationConfig = config.stations[station];
     const policy = {
-      contextPolicyVersion,
-      sessionPolicyVersion,
-      tokenPromptVersion: [
-        station === "publish"
-          ? undefined
-          : (stationConfig?.author ?? config.providers.author),
-        stationConfig?.reviewEnabled
-          ? (stationConfig.review ?? config.providers.review)
-          : undefined,
-      ].some((role) => role?.provider === "deepseek")
-        ? tokenPromptVersion
-        : undefined,
       base: config.base,
       provider: {
         author:
@@ -221,8 +210,8 @@ export class Kitchen {
           existsSync(file) ? hash(readFileSync(file)) : null,
         ]),
     );
-    return hash(
-      JSON.stringify({
+    return approvalFingerprint(
+      {
         station,
         upstream,
         artifact,
@@ -250,7 +239,8 @@ export class Kitchen {
           ? state.preparation
           : undefined,
         preview: station === "publish" ? this.previewBody(state) : null,
-      }),
+      },
+      record?.approval?.fingerprint ?? record?.reviewFingerprint,
     );
   }
   private async refresh(state: FeatureState): Promise<FeatureState> {
