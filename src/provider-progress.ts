@@ -30,8 +30,14 @@ export function providerProgress(request: ProviderRequest, probe = false) {
   const snapshot = (): ProviderMetrics => ({ ...metrics, durationMs: performance.now() - started });
   const checkpoint = () => {
     const file = path.join(request.runDir, `${request.role}-live.json`);
-    writeFileSync(file + ".tmp", JSON.stringify(snapshot()));
-    renameSync(file + ".tmp", file);
+    try {
+      writeFileSync(file + ".tmp", JSON.stringify(snapshot()));
+      renameSync(file + ".tmp", file);
+    } catch (error) {
+      // Windows readers/antivirus can briefly lock a live snapshot. Raw
+      // streams and final evidence remain strict; the next checkpoint retries.
+      if (!["EPERM", "EACCES", "EBUSY"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+    }
   };
   checkpoint();
   const span = (kind: "model" | "tool", id: string, elapsedMs: number, complete: boolean, name?: string) => {

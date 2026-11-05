@@ -485,6 +485,7 @@ export class Kitchen {
       ? `Continue as the author at the ${station} station for ${state.feature}. The runner verified unchanged source, upstream approvals, model, instructions and output contract.\nUse the already supplied repository evidence; do not reread unchanged content.\nDo not write files, execute checks, use git writes, send messages or publish. The runner owns proposals, checks and human approval.\nHuman/model continuation (roles are significant):\n${JSON.stringify(state.conversation.slice(conversationLength))}\nResolve the saved questions using these answers. Return either questions only (document=null and all proposal/manifest arrays empty), or a complete candidate with questions=[]. Return exactly the required JSON object.`
       : fullPrompt;
     let sessionId: string | undefined;
+    let sessionHome = session?.home;
     options.metrics?.promptBytes.push({
       role: role + suffix,
       sections: promptSections(prompt),
@@ -507,7 +508,7 @@ export class Kitchen {
           onMetrics: (metrics) => options.metrics?.providers.push(metrics),
           session,
           freshPrompt: fullPrompt,
-          onSession: reusable ? (id) => { sessionId = id; } : undefined,
+          onSession: reusable ? (id, home) => { sessionId = id; sessionHome = home ?? session?.home; } : undefined,
         }),
     );
     if (options.signal?.aborted) throw new Error("Station cancelled.");
@@ -524,12 +525,12 @@ export class Kitchen {
       throw new Error(
         "Provider changed repository contents outside the runner.",
       );
-    if (reusable && sessionId && session) {
+    if (reusable && sessionId && sessionHome && path.dirname(path.resolve(sessionHome)) === sessionRoot) {
       const validated = validateAuthorOutput(output, station);
       if (validated.questions.length && validated.document === null &&
         [validated.files, validated.allowedPaths, validated.unitTestFiles, validated.scaffoldFiles, validated.checks].every(values => !values.length)) {
         record.authorSession = {
-          id: sessionId, home: session.home, fingerprint: sessionFingerprint(state.conversation.length),
+          id: sessionId, home: sessionHome, fingerprint: sessionFingerprint(state.conversation.length),
           conversationLength: state.conversation.length,
         };
       }

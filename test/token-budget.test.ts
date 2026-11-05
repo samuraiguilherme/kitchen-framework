@@ -23,8 +23,16 @@ describe("DeepSeek token policy", () => {
     { version: 1, outputTokens: { review: 2049 } },
     { version: 1, outputTokens: { typo: 512 } },
     { version: 1, unexpected: true },
+    { version: 1, maxTokenRetries: 2 },
+    { version: 1, maxTokenRetries: -1 },
+    { version: 1, outputTokens: { author: 2049 } },
   ])("rejects invalid or misspelled policies %j", (policy) => {
     expect(() => validateTokenPolicy(policy, options)).toThrow(/token policy/i);
+  });
+  it("allows an initial author cap below the hard ceiling and an explicit single retry", () => {
+    const policy = { version: 1, maxTokenRetries: 1, outputTokens: { author: 1024 } };
+    expect(() => validateTokenPolicy(policy, options)).not.toThrow();
+    expect(generationLimit({ role: "author", config: { dsh: { ...options, tokenPolicy: policy } } } as ProviderRequest)).toBe(1024);
   });
   it("keeps author file outputs at the configured cap while allowing explicit short-task caps", () => {
     const request = {

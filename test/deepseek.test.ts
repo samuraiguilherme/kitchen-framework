@@ -9,6 +9,7 @@ import {
   checkDeepSeekPins,
   parseDeepSeekOutput,
   prepareDeepSeek,
+  validateDeepSeekConfig,
 } from "../src/deepseek.ts";
 import { cliProvider, probeProvider } from "../src/providers.ts";
 import type { ProviderRequest, RoleConfig } from "../src/types.ts";
@@ -66,10 +67,12 @@ function request(): ProviderRequest {
 }
 async function ollama(
   models = [{ name: config.model, digest: digest.slice(7) }],
+  thinking?: { values: boolean[] },
 ) {
   const server = createServer((req, res) => {
     res.setHeader("Content-Type", "application/json");
     if (req.url === "/api/tags") res.end(JSON.stringify({ models }));
+    else if (req.url === "/api/show" && thinking) res.end(JSON.stringify({ thinking }));
     else {
       res.writeHead(404);
       res.end("{}");
@@ -87,6 +90,39 @@ async function ollama(
 }
 
 describe("DeepSeek headless contract", () => {
+  it("rejects impossible reservations without a policy and invalid idle timeouts", () => {
+    for (const overrides of [
+      { contextWindow: 3072, maxTokens: 2048 },
+      { streamIdleTimeoutMs: 0 }, { streamIdleTimeoutMs: 1.5 },
+      { streamIdleTimeoutMs: 2147483648 },
+      { thinking: "false" },
+    ]) expect(() => validateDeepSeekConfig({ ...config, dsh: { ...config.dsh!, ...overrides } } as RoleConfig)).toThrow(/configuration|budget/);
+  });
+  it("requires advertised thinking metadata before explicitly changing thinking", async () => {
+    const local = await ollama();
+    await expect(checkDeepSeekModel({ ...local, dsh: { ...local.dsh!, thinking: false } }, 1000))
+      .rejects.toThrow(/does not advertise thinking=false/);
+  });
+  it("accepts an advertised boolean thinking control and rejects unsupported values", async () => {
+    const supported = await ollama(undefined, { values: [false, true] });
+    await expect(checkDeepSeekModel({ ...supported, dsh: { ...supported.dsh!, thinking: false } }, 1000))
+      .resolves.toMatchObject({ digest });
+    const unsupported = await ollama(undefined, { values: [true] });
+    await expect(checkDeepSeekModel({ ...unsupported, dsh: { ...unsupported.dsh!, thinking: false } }, 1000))
+      .rejects.toThrow(/does not advertise thinking=false/);
+  });
+  it("forwards the author cap and bounds the provider idle watchdog by the attempt deadline", () => {
+    const req = request();
+    req.role = "author";
+    req.config = { ...config, dsh: { ...config.dsh!, streamIdleTimeoutMs: 600000, thinking: false,
+      tokenPolicy: { version: 1, outputTokens: { author: 1024 }, maxTokenRetries: 1 } } };
+    const invocation = prepareDeepSeek(req, {});
+    const rows = parse(readFileSync(invocation.overlayFile, "utf8"));
+    expect(rows.find((r: { id: string }) => r.id === "llm-pi-ai").config.providers["ollama-local"])
+      .toMatchObject({ streamIdleTimeoutMs: req.timeoutMs, models: [{ maxTokens: 1024 }] });
+    expect(invocation.maxTokens).toBe(1024);
+    expect(rows.find((r: { id: string }) => r.id === "agent-default-model").config.reasoningEffort).toBe("off");
+  });
   it("measures immutable full requests and stops oversized inputs, long tool loops and truncated generations", async () => {
     const module = await import(new URL("../src/deepseek-guard.mjs", import.meta.url).href);
     const req = request();

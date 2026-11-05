@@ -6,11 +6,12 @@ import { sourceFiles } from "./git.ts";
 import { instructionFiles } from "./prompts.ts";
 import type { FeatureState, Station } from "./types.ts";
 
-export const contextPolicyVersion = 2;
+export const contextPolicyVersion = 3;
 export const bundleLimit = 24576;
 const excluded = /(?:^|\/)(?:\.env(?:\.[^/]*)?|\.git|\.kitchen|\.codex|\.claude|\.agents|node_modules)(?:\/|$)/i;
 export function mentionedPaths(text: string): string[] {
-  return [...new Set(text.match(/\b[\w.@-]+(?:\/[\w.@-]+)+/g) ?? [])]
+  return [...new Set((text.match(/\b[\w.@-]+(?:\/[\w.@-]+)+/g) ?? [])
+    .map(file => file.replace(/\.+$/, "")))]
     .filter(file => !excluded.test(file) && !file.split("/").includes(".."));
 }
 

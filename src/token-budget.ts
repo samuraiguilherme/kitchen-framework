@@ -7,7 +7,7 @@ import type {
   TokenStep,
 } from "./types.ts";
 
-export const tokenPromptVersion = 1;
+export const tokenPromptVersion = 2;
 export const compactDeepSeek = (role: RoleConfig): boolean =>
   role.provider === "deepseek" &&
   !!role.dsh?.tokenPolicy &&
@@ -40,12 +40,13 @@ export function validateTokenPolicy(
   const policy = value as DeepSeekTokenPolicy;
   const fields = [
     "version", "compactContext", "safetyMarginTokens", "toolHistoryReserveTokens",
-    "maxSteps", "maxToolCalls", "maxToolResultBytes", "maxInputBytes", "outputTokens",
+    "maxSteps", "maxToolCalls", "maxToolResultBytes", "maxInputBytes", "outputTokens", "maxTokenRetries",
   ];
   if (
     policy.version !== 1 ||
     Object.keys(policy).some((key) => !fields.includes(key)) ||
-    (policy.compactContext !== undefined && typeof policy.compactContext !== "boolean")
+    (policy.compactContext !== undefined && typeof policy.compactContext !== "boolean") ||
+    (policy.maxTokenRetries !== undefined && ![0, 1].includes(policy.maxTokenRetries))
   ) fail();
   for (const key of [
     "safetyMarginTokens", "toolHistoryReserveTokens", "maxSteps",
@@ -65,7 +66,7 @@ export function validateTokenPolicy(
       fail();
     for (const [key, cap] of Object.entries(policy.outputTokens))
       if (
-        !["probe", "review", "discovery"].includes(key) ||
+        !["probe", "review", "discovery", "author"].includes(key) ||
         !Number.isSafeInteger(cap) || cap < 1 || cap > options.maxTokens
       ) fail();
   }
@@ -75,7 +76,7 @@ export function generationLimit(request: ProviderRequest, probe = false): number
   const options = request.config.dsh!;
   const kind = probe ? "probe"
     : request.kind === "discovery" ? "discovery"
-    : request.role === "review" ? "review" : undefined;
+    : request.role === "review" ? "review" : "author";
   return (kind && options.tokenPolicy?.outputTokens?.[kind]) || options.maxTokens;
 }
 
@@ -89,7 +90,10 @@ export function summarizeTokenEvents(
     knownTotalTokens: 0, toolResultBytes: 0, warnings: [],
   };
   for (const event of events) {
-    if (event.type === "failure") result.failure = String(event.message);
+    if (event.type === "failure") {
+      result.failure = String(event.message);
+      (result.failureKinds ??= []).push(String(event.kind ?? "unknown"));
+    }
     if (event.warning) result.warnings.push(String(event.warning));
     if (typeof event.step !== "number") continue;
     if (event.type === "request")

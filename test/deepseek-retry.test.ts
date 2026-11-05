@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { parse } from "yaml";
 import { cliProvider } from "../src/providers.ts";
 import { parseDeepSeekOutput } from "../src/deepseek.ts";
 import { runProcess } from "../src/process.ts";
@@ -71,7 +72,7 @@ describe("DSH bounded contract regeneration", () => {
     expect(processMock.mock.calls[0]![0].env!.DSH_HOME).toBe(req.session.home);
     expect(processMock.mock.calls[1]![0].args).not.toContain("--session-id");
     expect(processMock.mock.calls[1]![0].input).toContain("FULL ORIGINAL CONTEXT");
-    expect(ids).toEqual([]);
+    expect(ids).toEqual(["session-corrected"]);
   });
   it("rejects mismatched resumed identities without regeneration", async () => {
     const req = request(); req.session = { id: "session-saved", home: path.join(req.cwd, "session-home") };
@@ -224,5 +225,124 @@ describe("DSH bounded contract regeneration", () => {
     await expect(cliProvider(req)).rejects.toThrow();
     expect(processMock).toHaveBeenCalledTimes(1);
     expect(existsSync(path.join(req.runDir, "contract-retry"))).toBe(false);
+  });
+});
+
+function recoveringRequest(): ProviderRequest {
+  const req = request();
+  req.config.dsh!.tokenPolicy = { version: 1, outputTokens: { author: 512 }, maxTokenRetries: 1 };
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ models: [{ name: "local", digest, context_length: 8192 }] }))));
+  return req;
+}
+
+function limited(req: ProviderRequest, options: {
+  input?: number; cache?: number; output?: number; raw?: string; result?: Partial<ProcessResult>; missingUsage?: boolean;
+  onRun?: () => void;
+} = {}) {
+  const sessionId = req.session?.id ?? "session-limited";
+  const raw = options.raw ?? wire([
+    { type: "session", sessionId },
+    { type: "final", sessionId, reason: { kind: "max-tokens" }, text: "{}" },
+  ]);
+  processMock.mockImplementationOnce(async invocation => {
+    options.onRun?.();
+    const patch = invocation.args[invocation.args.indexOf("--patch") + 1]!;
+    writeFileSync(patch.replace("-dsh.patch.yml", "-token-events.jsonl"), wire([
+      { type: "request", step: 1, inputBytes: 120, toolResultBytes: 0 },
+      { type: "failure", kind: "max-tokens", message: "DSH model stopped with max-tokens: incomplete generation" },
+      { type: "response", step: 1, finish: "max-tokens",
+        ...(options.missingUsage ? {} : { usage: { inputTokens: options.input ?? 100, cacheReadTokens: options.cache ?? 0, outputTokens: options.output ?? 512 } }) },
+    ]));
+    const failureReason = invocation.onOutput?.("stdout", raw);
+    return { code: 1, rawCode: 1, stdout: raw, stderr: "", timedOut: false, cancelled: false,
+      ...(failureReason ? { failureReason } : {}), ...options.result };
+  });
+}
+
+describe("DSH bounded token recovery", () => {
+  it("diagnoses rad's saved 16k/8k failure as context pressure with cached input included", async () => {
+    const req = recoveringRequest();
+    req.config.dsh!.contextWindow = 16384;
+    req.config.dsh!.maxTokens = 8192;
+    req.config.dsh!.tokenPolicy!.outputTokens!.author = 8192;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ models: [{ name: "local", digest, context_length: 16384 }] }))));
+    limited(req, { input: 36, cache: 12196, output: 26 });
+    await expect(cliProvider(req)).rejects.toThrow(/context-exhausted/);
+    const evidence = json(path.join(req.runDir, "author-process.json"));
+    expect(evidence.failure).toMatchObject({ kind: "context-exhausted", inputTokens: 12232, outputTokens: 26 });
+    expect(evidence.failure.nextMaxTokens).toBeUndefined();
+    expect(processMock).toHaveBeenCalledTimes(1);
+  });
+  it("retries once in a fresh session with twice the cap and preserves evidence and totals", async () => {
+    const req = recoveringRequest();
+    req.session = { id: "session-original", home: path.join(req.cwd, "sessions/original") };
+    req.prompt = "Delta"; req.freshPrompt = "Complete original requirements and human answers";
+    const sessions: unknown[] = []; req.onSession = (id, home) => { sessions.push({ id, home }); };
+    limited(req);
+    respond(completed(JSON.stringify(candidate)));
+    expect(await cliProvider(req)).toEqual(candidate);
+    expect(processMock).toHaveBeenCalledTimes(2);
+    const [first, second] = processMock.mock.calls.map(([invocation]) => invocation);
+    expect(second!.env!.DSH_HOME).not.toBe(first!.env!.DSH_HOME);
+    expect(second!.args).not.toContain("--session-id");
+    expect(second!.input).toContain(req.freshPrompt);
+    const patch = parse(readFileSync(second!.args[second!.args.indexOf("--patch") + 1]!, "utf8"));
+    expect(patch.find((row: { id: string }) => row.id === "llm-pi-ai").config.providers["ollama-local"].models[0].maxTokens).toBe(1024);
+    expect(sessions).toEqual([{ id: "session-corrected", home: second!.env!.DSH_HOME }]);
+    const evidence = json(path.join(req.runDir, "author-process.json"));
+    expect(evidence).toMatchObject({ code: -1, rawCode: 1,
+      failure: { kind: "generation-exhausted", nextMaxTokens: 1024 },
+      deepseek: { allocatedContextWindow: 8192, effectiveMaxTokens: 512 } });
+    expect(json(path.join(req.runDir, "author-attempts.json"))).toMatchObject({
+      status: "completed", kind: "token", totals: { knownTotalTokens: 640, usageComplete: true, totalTokens: 640 },
+    });
+    expect(json(path.join(req.runDir, "author-output.json"))).toEqual(candidate);
+  });
+
+  it.each(["disabled", "ceiling", "context", "unknown-allocation", "missing-usage", "process", "timeout", "cancelled", "stream", "session", "policy"])(
+    "does not recover when %s", async failure => {
+      const req = recoveringRequest();
+      const token: Parameters<typeof limited>[1] = {};
+      if (failure === "disabled") req.config.dsh!.tokenPolicy!.maxTokenRetries = 0;
+      if (failure === "ceiling") req.config.dsh!.maxTokens = 512;
+      if (failure === "context") { token.input = 7600; token.output = 26; }
+      if (failure === "unknown-allocation") vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ models: [{ name: "local", digest }] }))));
+      if (failure === "missing-usage") token.missingUsage = true;
+      if (failure === "process") token.result = { code: 7, rawCode: 7, failureReason: "independent process failure" };
+      if (failure === "timeout") token.result = { timedOut: true };
+      if (failure === "cancelled") token.result = { cancelled: true };
+      if (failure === "stream") token.raw = "not JSON\n";
+      if (failure === "session") req.session = { id: "expected", home: path.join(req.cwd, "saved") };
+      if (failure === "session") token.raw = wire([{ type: "session", sessionId: "other" }, { type: "final", sessionId: "other", reason: { kind: "max-tokens" }, text: "{}" }]);
+      if (failure === "policy") token.raw = wire([{ type: "session", sessionId: "s" }, { type: "tool_call", tool: "write", callId: "w" }, { type: "final", sessionId: "s", reason: { kind: "max-tokens" }, text: "{}" }]);
+      limited(req, token);
+      await expect(cliProvider(req)).rejects.toThrow();
+      expect(processMock).toHaveBeenCalledTimes(1);
+      expect(existsSync(path.join(req.runDir, "author-output.json"))).toBe(false);
+    },
+  );
+
+  it.each(["contract-then-token", "token-then-contract"])("caps %s at two attempts", async order => {
+    const req = recoveringRequest();
+    if (order === "contract-then-token") { respond(savedWire); limited(req); }
+    else { limited(req); respond(savedWire); }
+    await expect(cliProvider(req)).rejects.toThrow(/after one/);
+    expect(processMock).toHaveBeenCalledTimes(2);
+    expect(existsSync(path.join(req.runDir, "author-output.json"))).toBe(false);
+  });
+
+  it("shares the deadline and refuses recovery after cancellation or deadline exhaustion", async () => {
+    const req = recoveringRequest();
+    let now = 10000; vi.spyOn(Date, "now").mockImplementation(() => now);
+    limited(req, { onRun: () => { now += 400; } });
+    respond(completed(JSON.stringify(candidate)));
+    await cliProvider(req);
+    expect(processMock.mock.calls.map(([invocation]) => invocation.timeoutMs)).toEqual([1000, 600]);
+    for (const cancel of [true, false]) {
+      const next = recoveringRequest(); const controller = new AbortController(); next.signal = controller.signal;
+      limited(next, { onRun: () => { if (cancel) controller.abort(); else now += next.timeoutMs; } });
+      await expect(cliProvider(next)).rejects.toThrow();
+    }
+    expect(processMock).toHaveBeenCalledTimes(4);
   });
 });

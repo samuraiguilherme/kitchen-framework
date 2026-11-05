@@ -95,9 +95,10 @@ implementation proposal at a document station also triggers corrective
 regeneration.
 Kitchen never extracts fenced JSON or relaxes validation. A second invalid answer
 fails with `DSH final answer violated JSON contract`, the session ID, and the raw
-event evidence path. Stream failures, permission/tool denials, incomplete or
-truncated generations, token-budget failures, cancellation, and process failures
-remain terminal. There is no hosted fallback. Local discovery runs
+event evidence path. Stream failures, permission/tool denials, context or policy
+limits, cancellation, and independent process failures remain terminal.
+Generation exhaustion can use the opt-in bounded recovery described below;
+partial output is always rejected. There is no hosted fallback. Local discovery runs
 sequentially to limit memory.
 
 Inspect the role's `*-events.jsonl`, `*-stderr.log`, `*-process.json`, generated
@@ -108,8 +109,10 @@ requests and before accepting a station.
 
 When regeneration is needed, the original attempt stays in the role's run
 directory and the second attempt has its own prompts, events, token measurements,
-process record, patch, and DSH home under `contract-retry/`. The role's
-`*-attempts.json` records both evidence directories and errors. Only a validated
+process record and patch under `contract-retry/` or `token-retry/`. Fresh homes
+are isolated; after-input session reuse retains only a successful fresh session.
+The role's `*-attempts.json` records both evidence directories, errors, effective
+caps, and aggregate known usage. Only a validated
 candidate is exposed at the usual `*-answer.json` and `*-output.json` paths.
 
 To verify the harness integration without an actual model, prewarm the pinned
@@ -160,11 +163,89 @@ All-zero usage from the pinned adapter is treated as incomplete because it can
 represent a provider response with no usage data.
 
 The default output cap is unchanged. Optional `tokenPolicy.outputTokens` keys
-`probe`, `review`, and `discovery` accept positive caps up to `dsh.maxTokens`.
-Document and implementation authoring keep the full configured cap. Qualify
+`probe`, `review`, `discovery`, and `author` accept positive caps up to
+`dsh.maxTokens`. Authoring keeps the full cap unless an explicit `author` cap is
+set. Qualify
 short-task caps against the installed model before using them; a smaller cap
-that creates incomplete JSON does not save tokens per successful task. Thinking
-controls are not exposed without model and transport qualification.
+that creates incomplete JSON does not save tokens per successful task.
+
+An optional `dsh.thinking` boolean selects thinking on or off for models that
+advertise the exact boolean in `/api/show`'s `thinking.values`. Missing metadata
+or an unsupported value fails before inference. The pinned adapter maps `false`
+to `reasoning_effort: "none"` and `true` to `"high"` for Ollama's boolean control.
+Leave the field unset to preserve the model default. The wire mapping and a
+thinking-off readiness probe passed for the installed Qwen model; qualify full
+task correctness and latency before selecting a control for a project.
+
+## Recover from generation limits
+
+`dsh.maxTokens` is the hard per-model-call output ceiling. To permit a single
+larger attempt, set a lower initial cap for the role and
+`tokenPolicy.maxTokenRetries: 1` (default `0`). A qualifying `max-tokens` finish
+regenerates once in a fresh session with twice the initial cap, up to the hard
+ceiling. Contract regeneration and token recovery share a maximum of two total
+attempts and the original absolute deadline. Tools and model steps remain
+bounded per attempt by the policy defaults or explicit limits.
+
+Recovery requires a valid matching terminal stream, complete measured usage,
+output usage reaching the effective cap, and a verified Ollama allocation from
+`/api/ps` with a matching model name and digest. The larger reservation must fit
+all measured inputs and the safety margin. Missing counters or allocation,
+context pressure, an unchanged cap, and policy/stream/process failures stop
+recovery with an evidence path and next action. Partial JSON is never repaired
+or concatenated. The byte estimate remains advisory.
+
+For qualification, merge settings like these into a role that already selects
+a local model configured and loaded with at least 32,768 context tokens:
+
+```json
+{
+  "contextWindow": 32768,
+  "maxTokens": 8192,
+  "streamIdleTimeoutMs": 600000,
+  "tokenPolicy": {
+    "version": 1,
+    "outputTokens": { "author": 4096 },
+    "maxTokenRetries": 1
+  }
+}
+```
+
+These are `dsh` settings, not a complete role. Qualify them against the selected
+model and hardware before changing project configuration. Station author
+overrides can scope them to plan generation.
+
+Changing `contextWindow` only describes capacity to DSH. Configure Ollama's
+`num_ctx` separately (for this `/v1` route, use a model alias with
+`PARAMETER num_ctx`), check the loaded context with `ollama ps`, and verify the
+new digest pin. Budget complete harness input, tool history, reserved output,
+and safety margin together. More output capacity leaves less input capacity.
+Ollama can reuse a loaded runner labelled with an earlier alias. After changing
+aliases, reload the idle runner before qualification if `ollama ps` still
+reports the previous name/digest; recovery requires the selected identity and
+allocation to match.
+
+`dsh.streamIdleTimeoutMs` configures DSH's separate provider stream watchdog.
+It accepts positive integer milliseconds up to 2,147,483,647, defaults to
+300,000, and is bounded by the attempt's remaining outer timeout. Qualify it
+against model loading and prefill latency. An idle timeout does not trigger
+token recovery. Process evidence retains `rawCode`, a typed `failure` with
+usage/next action when generation fails, `effectiveStreamIdleTimeoutMs`, and
+`allocatedContextWindow` when available.
+
+Replay a saved failing document author prompt without changing its project's
+Kitchen state. The supplied config must contain the complete author role and
+timeout; evidence is written into a fresh local directory:
+
+```powershell
+node --import tsx scripts/qualify-dsh-recovery.ts --evidence C:/work/project/.kitchen/features/feature/runs/run/author --config C:/work/qualified-provider.json --iterations 3
+```
+
+The report checks schema, station/template structure, unchanged source, and
+actual context allocation. Review generated requirement and manifest coverage
+before selecting the configuration in the project.
+
+## Benchmark token usage
 
 Compare all eight workload cases without model inference:
 

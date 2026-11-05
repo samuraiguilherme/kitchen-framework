@@ -12,6 +12,7 @@ export interface ProcessOptions {
 }
 export interface ProcessResult {
   code: number;
+  rawCode?: number | null;
   stdout: string;
   stderr: string;
   timedOut: boolean;
@@ -93,6 +94,7 @@ export function runProcess(options: ProcessOptions): Promise<ProcessResult> {
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", abort);
       resolve({
+        rawCode: code,
         code:
           timedOut || cancelled || truncated || failureReason
             ? -1

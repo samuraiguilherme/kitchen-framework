@@ -8,13 +8,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createInterface } from "node:readline";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runProcess } from "./process.ts";
 import type { ProcessResult } from "./process.ts";
 import { providerProgress } from "./provider-progress.ts";
 import { promptSections } from "./metrics.ts";
-import { summarizeTokenEvents } from "./token-budget.ts";
+import { generationLimit, summarizeTokenEvents } from "./token-budget.ts";
 import { resolveProviderExecutable } from "./provider-executable.ts";
 import {
   checkDeepSeekModel,
@@ -22,11 +23,15 @@ import {
   deepseekFinalAnswer,
   parseDeepSeekOutput,
   prepareDeepSeek,
+  readDeepSeekAllocation,
 } from "./deepseek.ts";
+import { classifyDeepSeekFailure, DeepSeekFailure } from "./deepseek-failure.ts";
+import type { DeepSeekFailureInfo } from "./deepseek-failure.ts";
 import type {
   AuthorOutput,
   Provider,
   ProviderName,
+  ProviderMetrics,
   ProviderRequest,
   ReviewOutput,
   RoleConfig,
@@ -327,6 +332,7 @@ async function invokeProviderAttempt(
   request: ProviderRequest,
   probe = false,
   deadline = Date.now() + request.timeoutMs,
+  outputTokens?: number,
 ): Promise<unknown> {
   mkdirSync(request.runDir, { recursive: true });
   const authorOutputSchema = authorSchemaForStation(
@@ -344,7 +350,7 @@ async function invokeProviderAttempt(
   writeFileSync(schemaFile, JSON.stringify(schema));
   const deepseek =
     request.config.provider === "deepseek"
-      ? prepareDeepSeek(request, schema, probe)
+      ? prepareDeepSeek({ ...request, timeoutMs: Math.max(1, deadline - Date.now()) }, schema, probe, outputTokens)
       : undefined;
   const invocation =
     deepseek ??
@@ -382,6 +388,8 @@ async function invokeProviderAttempt(
     15000,
   );
   let result: ProcessResult;
+  let processResult: ProcessResult | undefined;
+  let allocatedContextWindow: number | undefined;
   let modelIdentity: Awaited<ReturnType<typeof checkDeepSeekModel>> | undefined;
   const startedAt = new Date().toISOString();
   const remainingTimeout = () => {
@@ -410,6 +418,7 @@ async function invokeProviderAttempt(
       signal: request.signal,
       onOutput: progress.capture,
     });
+    processResult = result;
     const failureReason = result.failureReason ?? progress.finish();
     if (failureReason) result = { ...result, code: -1, failureReason };
   } catch (error) {
@@ -423,6 +432,10 @@ async function invokeProviderAttempt(
     };
   } finally {
     clearInterval(heartbeat);
+  }
+  if (deepseek && modelIdentity && !result.cancelled && !result.timedOut && !request.signal?.aborted && deadline > Date.now()) {
+    allocatedContextWindow = await readDeepSeekAllocation(request.config, modelIdentity.digest,
+      Math.min(2000, deadline - Date.now()), request.signal).catch(() => undefined);
   }
   const metrics = progress.metrics();
   metrics.completedAt = new Date().toISOString();
@@ -455,12 +468,14 @@ async function invokeProviderAttempt(
     };
     if (!metrics.tokens.usageComplete) delete metrics.usage;
     if (metrics.tokens.failure)
-      result = { ...result, code: -1, failureReason: metrics.tokens.failure };
+      result = { ...result, code: -1, failureReason: result.failureReason ?? metrics.tokens.failure };
     for (const warning of new Set(metrics.tokens.warnings))
       progress.report(warning);
   }
   const processEvidence = {
     ...result,
+    rawCode: processResult?.rawCode ?? processResult?.code ?? null,
+    failure: undefined as DeepSeekFailureInfo | undefined,
     provider: request.config.provider,
     model: request.config.model ?? null,
     windowsSandbox: request.config.windowsSandbox ?? null,
@@ -478,6 +493,8 @@ async function invokeProviderAttempt(
             overlayFile: deepseek.overlayFile,
             overlayHash: deepseek.overlayHash,
             effectiveMaxTokens: deepseek.maxTokens,
+            effectiveStreamIdleTimeoutMs: deepseek.streamIdleTimeoutMs,
+            allocatedContextWindow,
             measurementFile: deepseek.measurementFile,
           },
         }
@@ -492,6 +509,15 @@ async function invokeProviderAttempt(
     `process exited; code=${result.code}${result.failureReason ? `; ${result.failureReason}` : ""}`,
   );
   if (result.code !== 0) {
+    if (deepseek && metrics.tokens) {
+      const detail = classifyDeepSeekFailure(request, processResult ?? result, metrics.tokens,
+        deepseek.maxTokens, allocatedContextWindow);
+      processEvidence.failure = detail;
+      saveProcess();
+      request.onMetrics?.(metrics);
+      throw new DeepSeekFailure(detail, path.resolve(request.runDir, `${request.role}-events.jsonl`),
+        result.failureReason ?? processError("deepseek", result));
+    }
     saveProcess();
     request.onMetrics?.(metrics);
     throw new Error(
@@ -529,7 +555,7 @@ async function invokeProviderAttempt(
       throw error;
     }
     if (deepseek) writeFileSync(answerFile, JSON.stringify(output, null, 2));
-    if (final) request.onSession?.(final.sessionId);
+    if (final) request.onSession?.(final.sessionId, deepseek!.home);
     metrics.actionableOutputMs = metrics.durationMs;
     if (request.config.provider === "claude") {
       const envelope = JSON.parse(result.stdout);
@@ -559,35 +585,55 @@ async function invokeProvider(
   probe = false,
 ): Promise<unknown> {
   const deadline = Date.now() + request.timeoutMs;
+  const metrics: ProviderMetrics[] = [];
+  const tracked = { ...request, onMetrics: (value: ProviderMetrics) => {
+    metrics.push(value);
+    request.onMetrics?.(value);
+  } };
   try {
-    return await invokeProviderAttempt(request, probe, deadline);
+    return await invokeProviderAttempt(tracked, probe, deadline);
   } catch (error) {
-    if (!(error instanceof DeepSeekContractError)) throw error;
+    const token = error instanceof DeepSeekFailure && error.info.nextMaxTokens !== undefined;
+    if (!(error instanceof DeepSeekContractError) && !token) throw error;
     const remaining = deadline - Date.now();
     if (request.signal?.aborted || remaining <= 0) throw error;
-    const runDir = path.join(request.runDir, "contract-retry");
+    const outputTokens = token ? (error as DeepSeekFailure).info.nextMaxTokens : undefined;
+    const runDir = path.join(request.runDir, token ? "token-retry" : "contract-retry");
+    const totals = () => {
+      const knownTotalTokens = metrics.reduce((total, value) => total + (value.tokens?.knownTotalTokens ?? 0), 0);
+      const usageComplete = metrics.length > 0 && metrics.every(value => value.tokens?.usageComplete);
+      return { knownTotalTokens, usageComplete, ...(usageComplete ? { totalTokens: knownTotalTokens } : {}),
+        modelSteps: metrics.reduce((total, value) => total + (value.tokens?.modelSteps ?? 0), 0),
+        toolCount: metrics.reduce((total, value) => total + value.toolCount, 0),
+      };
+    };
     const attempts = {
+      kind: token ? "token" : "contract",
       status: "regenerating",
       timeoutMs: request.timeoutMs,
-      original: { runDir: path.resolve(request.runDir), error: error.message },
-      retry: { runDir: path.resolve(runDir), error: undefined as string | undefined },
+      original: { runDir: path.resolve(request.runDir), error: error.message, effectiveMaxTokens: generationLimit(request, probe) },
+      retry: { runDir: path.resolve(runDir), effectiveMaxTokens: outputTokens ?? generationLimit(request, probe), error: undefined as string | undefined },
     };
     const saveAttempts = () =>
       writeFileSync(
         path.join(request.runDir, `${request.role}-attempts.json`),
-        JSON.stringify(attempts, null, 2),
+        JSON.stringify({ ...attempts, totals: totals() }, null, 2),
       );
     saveAttempts();
-    request.onProgress?.(`DSH final answer violated JSON contract; regenerating once; session=${error.sessionId}; evidence=${error.evidencePath}`);
+    request.onProgress?.(token
+      ? `${error.message}; starting one token recovery attempt`
+      : `DSH final answer violated JSON contract; regenerating once; session=${(error as DeepSeekContractError).sessionId}; evidence=${(error as DeepSeekContractError).evidencePath}`);
+    const correction = token
+      ? `KITCHEN TOKEN RECOVERY (one attempt only)\nThe previous generation exhausted its output budget. Use the full supplied requirements and human answers. Keep exploration targeted and summaries concise; return a complete candidate.`
+      : `KITCHEN CORRECTIVE REGENERATION (one attempt only)\nYour previous completed final answer violated the JSON/output contract: ${(error as DeepSeekContractError).detail}`;
     try {
       const output = await invokeProviderAttempt({
-        ...request,
-        session: undefined,
-        onSession: undefined,
+        ...tracked,
+        session: request.session ? { home: path.join(path.dirname(request.session.home), randomUUID()) } : undefined,
         runDir,
         timeoutMs: Math.max(1, deadline - Date.now()),
-        prompt: `${request.freshPrompt ?? request.prompt}\n\nKITCHEN CORRECTIVE REGENERATION (one attempt only)\nYour previous completed final answer violated the JSON/output contract: ${error.detail}\nRegenerate the answer to the original request using the supplied context and recorded human answers. Return exactly one complete JSON object matching the schema, without commentary or Markdown fences. All station boundaries still apply.`,
-      }, probe, deadline);
+        prompt: `${request.freshPrompt ?? request.prompt}\n\n${correction}\nRegenerate the answer to the original request using the supplied context and recorded human answers. Return exactly one complete JSON object matching the schema, without commentary or Markdown fences. All station boundaries still apply.`,
+      }, probe, deadline, outputTokens);
       // Retain both raw attempts; expose only the validated candidate at the
       // usual output paths for existing consumers.
       for (const suffix of ["answer", "output"])
@@ -602,7 +648,7 @@ async function invokeProvider(
       attempts.retry.error =
         retryError instanceof Error ? retryError.message : String(retryError);
       throw new Error(
-        `${attempts.retry.error} (after one corrective regeneration; original failure: ${error.message})`,
+        `${attempts.retry.error} (after one ${token ? "token recovery" : "corrective regeneration"}; original failure: ${error.message})`,
         { cause: retryError },
       );
     } finally {

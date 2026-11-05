@@ -391,7 +391,7 @@ export async function doctor(
       try {
         const identity = deepseekModelIdentity(role, server.models);
         check.status = "passed";
-        check.reason = `model=${identity.model}; endpoint=${identity.baseURL}; digest=${identity.digest}; pin=${role.dsh!.expectedModelDigest ? "matched" : "not configured"}; contextWindow=${role.dsh!.contextWindow}; maxTokens=${role.dsh!.maxTokens}.`;
+        check.reason = `model=${identity.model}; endpoint=${identity.baseURL}; digest=${identity.digest}; pin=${role.dsh!.expectedModelDigest ? "matched" : "not configured"}; contextWindow=${role.dsh!.contextWindow}; maxTokens=${role.dsh!.maxTokens}; authorInitialCap=${role.dsh!.tokenPolicy?.outputTokens?.author ?? role.dsh!.maxTokens}; streamIdleTimeoutMs=${role.dsh!.streamIdleTimeoutMs ?? 300000}; maxTokenRetries=${role.dsh!.tokenPolicy?.maxTokenRetries ?? 0}. Verify loaded Ollama num_ctx with ollama ps; contextWindow alone does not allocate backend memory.`;
       } catch (error) {
         check.status = localRequired ? "failed" : "unverified";
         const installed = server.models.flatMap((model) =>

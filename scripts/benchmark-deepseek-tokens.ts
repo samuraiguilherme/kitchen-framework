@@ -164,7 +164,7 @@ for (const item of cases) {
       if (item.station === "unit-tests") context += "\nBENCHMARK TASK: propose only test/answer.test.js using node:test and node:assert/strict, test name AC-1, asserting assert.equal(answer(), 42). Do not implement src/answer.js. Runtime preparation for this source-inspection fixture is supplied; no runtime proof is requested.\n";
       if (item.station === "implementation") context += "\nBENCHMARK TASK: return the complete src/answer.js with its existing export fixed to return 42. allowedPaths includes only src/answer.js; unit tests are protected.\n";
       const prompt = stationPrompt(state, item.station, item.role, context, item.feedback, true, compact);
-      const config: RoleConfig = { ...role, dsh: { ...role.dsh!, ...(compact ? { tokenPolicy: { version: 1, maxSteps: 8, maxToolCalls: 12, ...(item.resource ? { maxInputBytes: 16384 } : {}) } } : {}) } };
+      const config: RoleConfig = { ...role, dsh: { ...role.dsh!, ...(compact ? { tokenPolicy: { version: 1, maxSteps: 8, maxToolCalls: 12, ...role.dsh!.tokenPolicy, ...(item.resource ? { maxInputBytes: 16384 } : {}) } } : {}) } };
       const request = { station: item.station, role: item.role, cwd: fixture, runDir, prompt, timeoutMs, config };
       const schema = item.role === "review" ? reviewSchema
         : authorSchemaForStation(item.station, config.provider);

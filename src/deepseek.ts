@@ -66,6 +66,9 @@ export function validateDeepSeekConfig(config: RoleConfig): DeepSeekOptions {
     !Number.isSafeInteger(options.maxTokens) ||
     options.maxTokens < 1 ||
     options.maxTokens >= options.contextWindow ||
+    (options.streamIdleTimeoutMs !== undefined &&
+      (!Number.isSafeInteger(options.streamIdleTimeoutMs) || options.streamIdleTimeoutMs < 1 || options.streamIdleTimeoutMs > 2147483647)) ||
+    (options.thinking !== undefined && typeof options.thinking !== "boolean") ||
     (options.expectedModelDigest !== undefined &&
       !normalizeDigest(options.expectedModelDigest))
   )
@@ -74,6 +77,8 @@ export function validateDeepSeekConfig(config: RoleConfig): DeepSeekOptions {
     );
   if (options.tokenPolicy !== undefined)
     validateTokenPolicy(options.tokenPolicy, options);
+  if (tokenBudget(options, options.maxTokens).initialInputTarget < 1)
+    throw new Error("Invalid DeepSeek context budget: reserve input, output, safety margin and tool history.");
   return options;
 }
 
@@ -158,10 +163,43 @@ export async function checkDeepSeekModel(
   timeoutMs: number,
   signal?: AbortSignal,
 ) {
-  return deepseekModelIdentity(
+  const deadline = Date.now() + timeoutMs;
+  const identity = deepseekModelIdentity(
     config,
     await readDeepSeekModels(config, timeoutMs, signal),
   );
+  if (config.dsh!.thinking !== undefined) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new DOMException("Model capability deadline exceeded.", "TimeoutError");
+    const response = await fetch(new URL("/api/show", config.dsh!.baseURL), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: config.model }),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(remaining)]) : AbortSignal.timeout(remaining),
+      redirect: "error",
+    });
+    const details = response.ok ? await response.json() : undefined;
+    if (!Array.isArray(details?.thinking?.values) || !details.thinking.values.includes(config.dsh!.thinking))
+      throw new Error(`Model ${config.model} does not advertise thinking=${config.dsh!.thinking}; leave dsh.thinking unset or qualify a supported control.`);
+  }
+  return identity;
+}
+
+export async function readDeepSeekAllocation(
+  config: RoleConfig,
+  digest: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<number | undefined> {
+  const response = await fetch(new URL("/api/ps", config.dsh!.baseURL), {
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
+    redirect: "error",
+  });
+  if (!response.ok) return;
+  const body = await response.json();
+  const model = Array.isArray(body?.models) && body.models.find((item: Record<string, unknown>) =>
+    item?.name === config.model && normalizeDigest(item.digest) === digest);
+  if (model && Number.isSafeInteger(model.context_length) && model.context_length > 0)
+    return model.context_length;
 }
 
 export async function checkDeepSeekPins(
@@ -185,6 +223,7 @@ export function prepareDeepSeek(
   request: ProviderRequest,
   schema: unknown,
   probe = false,
+  outputTokens?: number,
 ) {
   const options = validateDeepSeekConfig(request.config);
   const runDir = path.resolve(request.runDir);
@@ -192,7 +231,10 @@ export function prepareDeepSeek(
   mkdirSync(home, { recursive: true });
   const noTools = probe || request.station === "intent";
   const allowTools = noTools ? [] : readTools;
-  const maxTokens = generationLimit(request, probe);
+  const maxTokens = outputTokens ?? generationLimit(request, probe);
+  if (!Number.isSafeInteger(maxTokens) || maxTokens < 1 || maxTokens > options.maxTokens)
+    throw new Error("Invalid DeepSeek attempt output cap.");
+  const streamIdleTimeoutMs = Math.max(1, Math.min(options.streamIdleTimeoutMs ?? 300000, request.timeoutMs));
   const measurementFile = path.join(runDir, `${request.role}-token-events.jsonl`);
   writeFileSync(measurementFile, "");
   // Remove model-visible capabilities as well as guarding execution. The guard
@@ -241,13 +283,16 @@ export function prepareDeepSeek(
             compat: {
               supportsDeveloperRole: false,
               maxTokensField: "max_tokens",
+              ...(options.thinking !== undefined ? { supportsReasoningEffort: true } : {}),
             },
             retryPolicy: { mode: "normal", maxRetries: 0 },
+            streamIdleTimeoutMs,
             models: [
               {
                 id: request.config.model,
                 contextWindow: options.contextWindow,
                 maxTokens,
+                ...(options.thinking !== undefined ? { reasoningEfforts: { off: "none", high: "high" } } : {}),
               },
             ],
           },
@@ -256,7 +301,9 @@ export function prepareDeepSeek(
     },
     {
       id: "agent-default-model",
-      config: { provider: "ollama-local", model: request.config.model },
+      config: { provider: "ollama-local", model: request.config.model,
+        ...(options.thinking !== undefined ? { reasoningEffort: options.thinking ? "high" : "off" } : {}),
+      },
     },
     {
       id: "tool-fs",
@@ -319,6 +366,8 @@ export function prepareDeepSeek(
     input,
     measurementFile,
     maxTokens,
+    home,
+    streamIdleTimeoutMs,
     overlayFile,
     overlayHash: createHash("sha256").update(overlayText).digest("hex"),
   };
@@ -359,10 +408,10 @@ export class DeepSeekContractError extends Error {
   }
 }
 
-export function deepseekFinalAnswer(
+export function deepseekTerminal(
   raw: string,
   noTools = false,
-): { sessionId: string; text: string } {
+): { sessionId: string; text: string; reason: string } {
   let sessionId: string | undefined;
   let final: Record<string, unknown> | undefined;
   for (const line of raw.split(/\r?\n/)) {
@@ -395,12 +444,19 @@ export function deepseekFinalAnswer(
     typeof final.text !== "string" ||
     !final.reason ||
     typeof final.reason !== "object" ||
-    (final.reason as Record<string, unknown>).kind !== "completed"
+    typeof (final.reason as Record<string, unknown>).kind !== "string"
   )
     throw new Error(
       "DSH did not complete a matching session with a final answer.",
     );
-  return { sessionId, text: final.text };
+  return { sessionId, text: final.text, reason: (final.reason as { kind: string }).kind };
+}
+
+export function deepseekFinalAnswer(raw: string, noTools = false): { sessionId: string; text: string } {
+  const final = deepseekTerminal(raw, noTools);
+  if (final.reason !== "completed")
+    throw new Error("DSH did not complete a matching session with a final answer.");
+  return { sessionId: final.sessionId, text: final.text };
 }
 
 export function parseDeepSeekOutput(raw: string, noTools = false): unknown {

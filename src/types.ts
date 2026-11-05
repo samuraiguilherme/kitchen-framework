@@ -82,6 +82,7 @@ export interface TokenMetrics {
   toolResultBytes: number;
   terminationReason?: string;
   failure?: string;
+  failureKinds?: string[];
   warnings: string[];
 }
 export interface RunMetrics {
@@ -138,6 +139,8 @@ export interface DeepSeekOptions {
   baseURL: string;
   contextWindow: number;
   maxTokens: number;
+  streamIdleTimeoutMs?: number;
+  thinking?: boolean;
   expectedModelDigest?: string;
   tokenPolicy?: DeepSeekTokenPolicy;
 }
@@ -150,7 +153,8 @@ export interface DeepSeekTokenPolicy {
   maxToolCalls?: number;
   maxToolResultBytes?: number;
   maxInputBytes?: number;
-  outputTokens?: { probe?: number; review?: number; discovery?: number };
+  maxTokenRetries?: 0 | 1;
+  outputTokens?: { probe?: number; review?: number; discovery?: number; author?: number };
 }
 export interface RoleConfig {
   provider: ProviderName;
@@ -276,7 +280,7 @@ export interface ProviderRequest {
   kind?: "discovery";
   onMetrics?: (metrics: ProviderMetrics) => void;
   session?: { id?: string; home: string };
-  onSession?: (id: string) => void;
+  onSession?: (id: string, home?: string) => void;
   freshPrompt?: string;
 }
 export type Provider = (request: ProviderRequest) => Promise<unknown>;

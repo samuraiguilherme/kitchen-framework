@@ -34,7 +34,7 @@ const checks = [
 ];
 
 describe("station latency safeguards", () => {
-  it.each(["unchanged", "source", "instructions", "model", "history"])("isolates after-input author sessions when %s", async change => {
+  it.each(["unchanged", "source", "instructions", "model", "history", "recovered"])("isolates after-input author sessions when %s", async change => {
     const setup = fixture();
     let digest = "a".repeat(64);
     const server = createServer((_request, response) => response.end(JSON.stringify({ models: [{ name: "local", digest }] })));
@@ -50,7 +50,9 @@ describe("station latency safeguards", () => {
       const kitchen = new Kitchen({ root: setup.root, github: setup.gateway, provider: async request => {
         calls.push(request);
         if (calls.length === 1) {
-          request.onSession?.("session-initial");
+          const home = change === "recovered" ? path.join(path.dirname(request.session!.home), "fresh-recovery") : undefined;
+          if (home) mkdirSync(home, { recursive: true });
+          request.onSession?.("session-initial", home);
           return { summary: "Question", questions: [{ id: "who", text: "Who needs this?" }], document: null, files: [], allowedPaths: [], unitTestFiles: [], scaffoldFiles: [], checks: [] };
         }
         return setup.provider(request);
@@ -66,7 +68,8 @@ describe("station latency safeguards", () => {
         const state = JSON.parse(readFileSync(file, "utf8")); state.conversation[0].text = "Edited original request"; writeFileSync(file, JSON.stringify(state));
       }
       await kitchen.run("answer", "intent", { feedback: "Local callers need exactly 42" });
-      expect(calls[1]?.session?.id).toBe(change === "unchanged" ? "session-initial" : undefined);
+      expect(calls[1]?.session?.id).toBe(["unchanged", "recovered"].includes(change) ? "session-initial" : undefined);
+      if (change === "recovered") expect(path.basename(calls[1]!.session!.home)).toBe("fresh-recovery");
       if (change === "unchanged") {
         expect(calls[1]?.prompt).toContain("Human/model continuation");
         expect(calls[1]?.prompt).not.toContain("Existing template");

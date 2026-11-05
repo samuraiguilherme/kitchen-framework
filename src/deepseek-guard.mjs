@@ -21,11 +21,15 @@ export function apply(ctx, config) {
   };
   const failure = (message) => {
     const detail = `KITCHEN_TOKEN_BUDGET: ${message}. Split the task or qualify larger limits; no content was truncated`;
-    record({ type: "failure", message: detail });
+    record({ type: "failure", kind: "policy-limit", message: detail });
     return detail;
   };
   ctx.tools.guard((call) => {
-    if (!allowed.has(call.name)) return `KITCHEN_TOOL_DENIED: ${call.name}`;
+    if (!allowed.has(call.name)) {
+      const message = `KITCHEN_TOOL_DENIED: ${call.name}`;
+      record({ type: "failure", kind: "tool-policy", message });
+      return message;
+    }
     if (config.policy && ++calls > (config.policy.maxToolCalls ?? 12))
       return failure(`tool-call limit ${config.policy.maxToolCalls ?? 12} exceeded`);
   });
@@ -88,12 +92,13 @@ export function apply(ctx, config) {
               return;
             }
             if (!["stop", "tool-calls"].includes(finish))
-              record({ type: "failure", message: `DSH model stopped with ${finish}: ${chunk.reason.failure?.message ?? "incomplete generation"}` });
+              record({ type: "failure", kind: finish, code: chunk.reason.failure?.code,
+                message: `DSH model stopped with ${finish}: ${chunk.reason.failure?.message ?? "incomplete generation"}` });
           }
           yield chunk;
         }
       } catch (error) {
-        record({ type: "failure", message: String(error) });
+        record({ type: "failure", kind: "stream-error", message: String(error) });
         throw error;
       } finally {
         record({ type: "response", step, usage, finish: finish ?? "interrupted" });
