@@ -124,6 +124,14 @@ export const intentAuthorSchema = {
   ...intentStructuredSchema,
   anyOf: documentAlternatives,
 };
+const verifyAuthorSchema = object({
+  ...authorSchema.properties,
+  document: {
+    type: "null",
+    description: "The runner generates verification.md. Put verification analysis in summary; do not return a document.",
+  },
+  ...emptyAuthorArrays,
+});
 const documentStations: readonly Station[] = ["intent", "spec", "plan", "test-plan"];
 export function authorSchemaForStation(station?: Station, provider?: ProviderName) {
   // Hosted transports prohibit a root anyOf. Restrict their fields and enforce
@@ -133,6 +141,7 @@ export function authorSchemaForStation(station?: Station, provider?: ProviderNam
     return hosted ? intentStructuredSchema : intentAuthorSchema;
   if (station && documentStations.includes(station))
     return hosted ? documentStructuredSchema : documentAuthorSchema;
+  if (station === "verify") return verifyAuthorSchema;
   return authorSchema;
 }
 export const reviewSchema = object({
@@ -155,6 +164,7 @@ const ajv = new Ajv({ allErrors: true });
 const authorValidator = ajv.compile(authorSchema);
 const intentAuthorValidator = ajv.compile(intentAuthorSchema);
 const documentAuthorValidator = ajv.compile(documentAuthorSchema);
+const verifyAuthorValidator = ajv.compile(verifyAuthorSchema);
 const reviewValidator = ajv.compile(reviewSchema);
 const discoveryValidator = ajv.compile(discoverySchema);
 export function validateDiscoveryOutput(value: unknown) {
@@ -170,10 +180,11 @@ export function validateAuthorOutput(
 ): AuthorOutput {
   const documentStation = station !== undefined && documentStations.includes(station);
   const validator = station === "intent" ? intentAuthorValidator
-    : documentStation ? documentAuthorValidator : authorValidator;
+    : documentStation ? documentAuthorValidator
+    : station === "verify" ? verifyAuthorValidator : authorValidator;
   if (!validator(value))
     throw new Error(
-      `Invalid ${documentStation ? `${station} author` : "author"} output: ${ajv.errorsText(validator.errors)}`,
+      `Invalid ${documentStation || station === "verify" ? `${station} author` : "author"} output: ${ajv.errorsText(validator.errors)}`,
     );
   return value as unknown as AuthorOutput;
 }
