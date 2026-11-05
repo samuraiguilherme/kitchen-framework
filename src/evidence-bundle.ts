@@ -6,13 +6,35 @@ import { sourceFiles } from "./git.ts";
 import { instructionFiles } from "./prompts.ts";
 import type { FeatureState, Station } from "./types.ts";
 
-export const contextPolicyVersion = 3;
+export const contextPolicyVersion = 4;
 export const bundleLimit = 24576;
 const excluded = /(?:^|\/)(?:\.env(?:\.[^/]*)?|\.git|\.kitchen|\.codex|\.claude|\.agents|node_modules)(?:\/|$)/i;
 export function mentionedPaths(text: string): string[] {
   return [...new Set((text.match(/\b[\w.@-]+(?:\/[\w.@-]+)+/g) ?? [])
     .map(file => file.replace(/\.+$/, "")))]
     .filter(file => !excluded.test(file) && !file.split("/").includes(".."));
+}
+
+// Current drafts are already supplied to the model. Their paths are useful
+// evidence hints even when a failed run has no approved artifact manifest.
+export function contextDocuments(state: FeatureState, station?: Station): Array<readonly [string, string]> {
+  const paths = Object.values(state.stations)
+    .filter(record => record?.status === "approved")
+    .flatMap(record => record!.artifactFiles)
+    .filter(file => file.startsWith(`docs/features/${state.feature}/`) && file.endsWith(".md"));
+  if (station && ["spec", "plan", "test-plan"].includes(station)) {
+    const candidate = `docs/features/${state.feature}/${station}.md`;
+    if (existsSync(safePath(state.worktree, candidate))) paths.push(candidate);
+  }
+  return [...new Set(paths)].map(file => [file, readFileSync(safePath(state.worktree, file), "utf8")] as const);
+}
+
+export function contextPaths(state: FeatureState, documents: Array<readonly [string, string]>): string[] {
+  return mentionedPaths([
+    state.request,
+    ...state.conversation.filter(entry => entry.role === "operator").map(entry => entry.text),
+    ...documents.map(([, content]) => content),
+  ].join("\n"));
 }
 
 /** Facts only: citations carry full-file hashes; bounded excerpts never imply complete coverage. */
@@ -22,12 +44,8 @@ export async function evidenceBundle(
 ): Promise<{ text: string; key: string; cacheHit: boolean }> {
   const files = (await sourceFiles(state.worktree, state.feature)).sort();
   const known = new Set(files);
-  const docs = Object.entries(state.stations)
-    .filter(([, record]) => record?.status === "approved")
-    .flatMap(([, record]) => record!.artifactFiles)
-    .filter(file => file.startsWith(`docs/features/${state.feature}/`) && file.endsWith(".md"))
-    .map(file => [file, readFileSync(safePath(state.worktree, file), "utf8")] as const);
-  const explicit = mentionedPaths([state.request, ...docs.map(([, content]) => content)].join("\n"));
+  const docs = contextDocuments(state, station);
+  const explicit = contextPaths(state, docs);
   const targets = [...new Set([
     ...explicit,
     ...(state.stations.plan?.status === "approved" ? state.stations.plan.output?.allowedPaths ?? [] : []),

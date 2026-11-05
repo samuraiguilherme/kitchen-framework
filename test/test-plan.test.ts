@@ -72,9 +72,10 @@ describe("generated test-plan IDs", () => {
       ["", "!!!"],
     ]) {
       const normalized = normalizeTestPlan(candidate(ids));
-      const findings = validateCheckPlan(["AC-1"], normalized.checks, {
-        unit: { kind: "unit" },
-      });
+      const findings = validateCheckPlan(
+        ["AC-1"], normalized.checks, { unit: { kind: "unit" } },
+        normalized.unitTestFiles,
+      );
       expect(findings).toContainEqual(
         expect.objectContaining({ rule: "duplicate-check", blocking: true }),
       );

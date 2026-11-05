@@ -214,6 +214,10 @@ a local model configured and loaded with at least 32,768 context tokens:
 These are `dsh` settings, not a complete role. Qualify them against the selected
 model and hardware before changing project configuration. Station author
 overrides can scope them to plan generation.
+Apply qualified settings to the project's active `providers.author` to cover
+all author stations, or to every intended station override. A saved plan-only
+override does not change the spec author. Provider changes invalidate affected
+approval fingerprints; rerun and reapprove stale upstream stations normally.
 
 Changing `contextWindow` only describes capacity to DSH. Configure Ollama's
 `num_ctx` separately (for this `/v1` route, use a model alias with

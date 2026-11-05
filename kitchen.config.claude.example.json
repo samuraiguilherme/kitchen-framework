@@ -15,7 +15,7 @@
       "kind": "unit",
       "cwd": ".",
       "command": "pnpm",
-      "args": ["exec", "vitest", "run", "{files}", "--reporter=json"],
+      "args": ["exec", "vitest", "run", "{files}", "--reporter=json", "--outputFile={reportFile}"],
       "parser": "vitest-json",
       "timeoutMs": 180000
     },

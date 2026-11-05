@@ -1,0 +1,8 @@
+{
+  "provenance": "Normalized cases derived from RAD first-feat failures inspected 2026-11-05. Only diagnostic facts and small synthetic requests are retained.",
+  "documentProposal": { "run": "5f03614b-c0ae-46b5-a9c7-1c6059b334a9", "expected": "Invalid spec author output" },
+  "fencedJson": { "run": "d3ca5249-ae4e-4e21-8478-79a8cad4f041", "text": "```json\n{\"summary\":\"candidate\"}\n```" },
+  "contextPressure": { "run": "96d05e42-c868-4094-b08e-5ae02c3f14bc", "contextWindow": 16384, "maxTokens": 8192, "inputTokens": 13337, "outputTokens": 1 },
+  "missingProfiles": { "run": "a4dac20c-f8f9-4255-bcbb-88e4b5699f2c", "profiles": ["vitest", "manual"], "criterion": "AC-1" },
+  "cancelled": { "run": "86edbed2-b4f4-4c87-85b1-8dcbb6eff31b", "terminalReason": "cancelled" }
+}

@@ -1,5 +1,6 @@
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -12,6 +13,7 @@ import spawn from "cross-spawn";
 import { finding, hash, safePath } from "./domain.ts";
 import { runProcess, stopProcess } from "./process.ts";
 import { executeSetup } from "./setup-runner.ts";
+import { collectManualObservation } from "./manual-observations.ts";
 import type {
   CheckDefinition,
   CheckResult,
@@ -94,10 +96,14 @@ export function classifyTestOutput(
     (a) =>
       (a.failureMessages ?? []).length > 0 &&
       a.failureMessages!.every(
-        (m) =>
-          /AssertionError|expect\(|expected .* (?:to|received)|toBe|toEqual|toThrow/i.test(
-            m,
-          ) && !infrastructure.test(m),
+        (m) => {
+          // Vitest assertion stacks include runWithTimeout; stack locations
+          // are not infrastructure diagnostics and must not invalidate RED.
+          const diagnostic = m.split(/\r?\n\s+at /, 1)[0]!;
+          return /AssertionError|expect\(|expected .* (?:to|received)|toBe|toEqual|toThrow/i.test(
+            diagnostic,
+          ) && !infrastructure.test(diagnostic);
+        },
       ),
   );
   const allCoveredRed =
@@ -153,8 +159,26 @@ export function validateCheckPlan(
   acIds: string[],
   checks: CheckDefinition[],
   profiles: Record<string, Pick<Profile, "kind">>,
+  unitTestFiles: readonly string[],
 ): Finding[] {
   const findings: Finding[] = [];
+  const profileFor = (id: string) =>
+    Object.hasOwn(profiles, id) ? profiles[id] : undefined;
+  const unknownProfiles = new Map<string, string[]>();
+  for (const check of checks) {
+    if (profileFor(check.profile)) continue;
+    const references = unknownProfiles.get(check.profile) ?? [];
+    references.push(check.id);
+    unknownProfiles.set(check.profile, references);
+  }
+  for (const [profile, references] of unknownProfiles)
+    findings.push(
+      finding(
+        "unknown-profile",
+        profile,
+        `Select an explicit configured check profile for checks: ${[...new Set(references)].join(", ")}.`,
+      ),
+    );
   if (new Set(checks.map((c) => c.id)).size !== checks.length)
     findings.push(
       finding(
@@ -164,14 +188,6 @@ export function validateCheckPlan(
       ),
     );
   for (const check of checks) {
-    if (!profiles[check.profile])
-      findings.push(
-        finding(
-          "unknown-profile",
-          check.profile,
-          "Select an explicit configured check profile.",
-        ),
-      );
     if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(check.id))
       findings.push(
         finding("invalid-check-id", check.id, "Use kebab-case IDs."),
@@ -185,14 +201,16 @@ export function validateCheckPlan(
         ),
       );
     if (
-      profiles[check.profile]?.kind === "unit" &&
-      (!check.files.length || !check.required)
+      profileFor(check.profile)?.kind === "unit" &&
+      (!check.files.length ||
+        !check.required ||
+        check.files.some((file) => !unitTestFiles.includes(file)))
     )
       findings.push(
         finding(
           "unit-scope",
           check.id,
-          "Unit tests need explicit files and must be required.",
+          "Unit checks must be required and select explicit files from unitTestFiles; exclude production modules and existing regression files.",
         ),
       );
   }
@@ -201,8 +219,8 @@ export function validateCheckPlan(
       !checks.some(
         (c) =>
           c.required &&
-          profiles[c.profile]?.kind !== "command" &&
-          profiles[c.profile] &&
+          profileFor(c.profile)?.kind !== "command" &&
+          profileFor(c.profile) &&
           c.acIds.includes(id),
       )
     )
@@ -213,7 +231,7 @@ export function validateCheckPlan(
           "Map the criterion to a required behavioral or observed check.",
         ),
       );
-  if (!checks.some((c) => c.required && profiles[c.profile]?.kind === "unit"))
+  if (!checks.some((c) => c.required && profileFor(c.profile)?.kind === "unit"))
     findings.push(
       finding(
         "unit-tests-required",
@@ -278,6 +296,7 @@ function expand(
   files: string[],
   baseUrl?: string,
   port?: number,
+  reportFile?: string,
 ): string[] {
   return args.flatMap((arg) =>
     arg === "{files}"
@@ -285,6 +304,7 @@ function expand(
       : [
           arg
             .replaceAll("{baseUrl}", baseUrl ?? "")
+            .replaceAll("{reportFile}", reportFile ?? "")
             .replaceAll("{port}", String(port ?? "")),
         ],
   );
@@ -309,6 +329,7 @@ export interface ExecuteCheckInput {
   green: boolean;
   signal?: AbortSignal;
   observations?: ManualObservation[];
+  ask?: (question: string) => Promise<string>;
 }
 
 export async function executeCheck(
@@ -335,18 +356,24 @@ async function executeOne(
     profile.cwd && profile.cwd !== "." ? safePath(root, profile.cwd) : root;
   mkdirSync(runDir, { recursive: true });
   const evidenceFile = path.join(runDir, `check-${check.id}.json`);
+  const reportFile = profile.args?.some((arg) => arg.includes("{reportFile}"))
+    ? path.resolve(runDir, `report-${check.id}.json`)
+    : undefined;
+  let reportHash: string | undefined;
   result.evidence = evidenceFile;
   const finish = () => {
     result.durationMs = performance.now() - started;
     writeFileSync(evidenceFile, JSON.stringify(result, null, 2));
     result.evidenceHashes = Object.fromEntries(
       readdirSync(runDir)
-        .filter((file) => file.endsWith(`-${check.id}.json`))
+        .filter((file) => file.endsWith(`-${check.id}.json`) &&
+          path.resolve(runDir, file) !== reportFile)
         .map((file) => {
           const absolute = path.join(runDir, file);
           return [absolute, hash(readFileSync(absolute))];
         }),
     );
+    if (reportFile && reportHash) result.evidenceHashes[reportFile] = reportHash;
     return result;
   };
   if (input.signal?.aborted) {
@@ -355,7 +382,14 @@ async function executeOne(
     return finish();
   }
   if (profile.kind === "manual") {
-    const observation = input.observations?.find((o) => o.id === check.id);
+    const observation = input.observations?.find((o) => o.id === check.id) ??
+      (input.ask ? await collectManualObservation({
+        id: check.id,
+        acIds: check.acIds,
+        root,
+        ask: input.ask,
+        signal: input.signal,
+      }) : undefined);
     if (
       !observation?.observation.trim() ||
       !observation.evidence.length ||
@@ -519,10 +553,14 @@ async function executeOne(
         return finish();
       }
     }
+    if (reportFile && (existsSync(reportFile) || profile.parser === "exit-code")) {
+      result.reason = "A counted report requires a fresh report artifact; existing files cannot be reused.";
+      return finish();
+    }
     const startedAt = new Date().toISOString();
     const execution = await runProcess({
       command: profile.command!,
-      args: expand(profile.args!, testFiles, baseUrl),
+      args: expand(profile.args!, testFiles, baseUrl, undefined, reportFile),
       cwd,
       timeoutMs: profile.timeoutMs!,
       signal: input.signal,
@@ -544,7 +582,8 @@ async function executeOne(
           profile: check.profile,
           cwd,
           command: profile.command,
-          args: expand(profile.args!, testFiles, baseUrl),
+          args: expand(profile.args!, testFiles, baseUrl, undefined, reportFile),
+          reportFile,
           baseUrl,
           fingerprint,
         },
@@ -564,6 +603,22 @@ async function executeOne(
       result.reason = "Command exit evidence; no behavioral coverage claimed.";
     } else {
       let raw = execution.stdout;
+      if (reportFile) {
+        try {
+          const info = lstatSync(reportFile);
+          const maxReportBytes = 128 * 1024 * 1024;
+          if (!info.isFile() || info.size > maxReportBytes)
+            throw new Error("Expected a regular report file of at most 128 MiB.");
+          const contents = readFileSync(reportFile);
+          if (contents.length > maxReportBytes)
+            throw new Error("Report exceeded 128 MiB while reading.");
+          reportHash = hash(contents);
+          raw = contents.toString("utf8");
+        } catch (error) {
+          result.reason = `Required test report artifact is unavailable: ${error instanceof Error ? error.message : String(error)}`;
+          return finish();
+        }
+      }
       try {
         if (profile.parser === "playwright-json") raw = playwrightToVitest(raw);
       } catch {

@@ -22,7 +22,13 @@
   "scripts": {
     "kitchen": "node bin/kitchen.mjs",
     "cli": "tsx src/cli.ts",
-    "test": "vitest run",
+    "test": "node --import tsx scripts/test.ts all",
+    "test:core": "node --import tsx scripts/test.ts core",
+    "test:integration": "node --import tsx scripts/test.ts integration",
+    "test:watch": "node --import tsx scripts/test.ts core --watch",
+    "test:preflight": "node --import tsx scripts/test.ts preflight",
+    "test:live": "node --import tsx scripts/test.ts live",
+    "test:replay": "node --import tsx scripts/replay-station.ts",
     "check:types": "tsc --noEmit",
     "lint": "oxlint -c .oxlintrc.json ."
   },

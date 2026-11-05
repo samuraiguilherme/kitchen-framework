@@ -49,6 +49,7 @@ import { compactDeepSeek, tokenPromptVersion } from "./token-budget.ts";
 import { executeSetup } from "./setup-runner.ts";
 import { Storage } from "./storage.ts";
 import { normalizeTestPlan } from "./test-plan.ts";
+import { requireTestPlanReadiness } from "./readiness.ts";
 import {
   prepareRuntime,
   readPreparation,
@@ -231,7 +232,7 @@ export class Kitchen {
         rubric: rubric(station),
         instructions: instructions(
           state.worktree,
-          targetPaths(state, index >= 2),
+          targetPaths(state, index >= 2, station),
         ),
         output: record?.output,
         findings: record?.findings,
@@ -464,7 +465,7 @@ export class Kitchen {
     const sessionFingerprint = (conversationLength: number) => hash(JSON.stringify({
       contextPolicyVersion, sessionPolicyVersion, station, source: before.fingerprint,
       model: modelIdentity?.digest, roleConfig, rubric: rubric(station),
-      instructions: instructions(state.worktree, targetPaths(state)),
+      instructions: instructions(state.worktree, targetPaths(state, !["intent", "spec"].includes(station), station)),
       schema: authorSchemaForStation(station),
       request: state.request, issue: state.issue, base: state.baseCommit,
       upstream: stationOrder.slice(0, stationOrder.indexOf(station)).map(name => state.stations[name]?.approval?.fingerprint),
@@ -613,6 +614,11 @@ export class Kitchen {
         options.onProgress,
       );
       this.requirePrevious(state, station);
+      if (station === "test-plan") {
+        // This station establishes/replaces the executable check contract.
+        // Earlier document outputs may contain unused or retired profile names.
+        requireTestPlanReadiness(this.root, loadConfig(this.root), []);
+      }
       if (["unit-tests", "implementation", "verify"].includes(station))
         readPreparation(this.root, state, loadConfig(this.root));
       if (state.pr)
@@ -813,6 +819,7 @@ export class Kitchen {
                   green: true,
                   signal: options.signal,
                   observations: options.observations,
+                  ask: options.ask,
                 }),
               options.onProgress,
             )),
@@ -943,6 +950,7 @@ export class Kitchen {
             acceptanceIds(this.readDocument(state, "spec")),
             output.checks,
             loadConfig(this.root).profiles,
+            output.unitTestFiles,
           ),
         );
         document +=
@@ -1237,6 +1245,7 @@ export class Kitchen {
             acceptanceIds(this.readDocument(state, "spec")),
             contract.checks,
             loadConfig(this.root).profiles,
+            contract.unitTestFiles,
           ).length
         )
           throw new Error("Invalid executable test plan cannot be waived.");

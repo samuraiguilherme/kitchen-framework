@@ -27,6 +27,7 @@ const usage = `Local Development Kitchen
   kitchen publish <feature>
 Stations: ${stationOrder.join(", ")}
 Every run pauses for human approval. Model review is opt-in per station.
+Interactive runs ask for manual check observations and evidence file paths.
 Publication requires its own preview and approval.
 Add --cwd <path> to select a project (defaults to the current directory).
 File arguments are resolved relative to that directory.
@@ -112,7 +113,7 @@ async function main(): Promise<void> {
     ? (question: string) => {
         terminal ??= createInterface({
           input: process.stdin,
-          output: process.stdout,
+          output: values.json ? process.stderr : process.stdout,
         });
         return terminal.question(question + "\n> ", {
           signal: controller.signal,

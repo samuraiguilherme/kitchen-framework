@@ -1,8 +1,40 @@
 # DSH max token recovery plan
 
 Status: implementation validated; targeted generation qualification passed. Prepared and
-executed 2026-11-05. Existing provider defaults and rad configuration are
-preserved.
+executed 2026-11-05. Framework defaults are preserved. The qualified author
+configuration is now active in rad's local configuration.
+
+## Applied spec fix
+
+The follow-up spec failure still used rad's original 16,384-token author
+configuration: the earlier work had only saved a plan-specific override.
+Its last step reached 13,337 input tokens with an 8,192-token output reservation
+and produced one output token before stopping.
+
+Rad's active `kitchen.config.local.json` now selects the pinned
+`kitchen-qwen3.6:27b-32k-json` author with a 32,768-token context, thinking off,
+and bounded compact context across author stations, including spec. The
+original configuration is backed up at
+`.kitchen/validation/rad-spec-context-fix/rad-config-before.json`.
+
+The context builder now uses recorded operator paths and the current document
+draft as source hints. It includes the matching source and app instructions
+upfront, with the existing secret exclusions and excerpt limits. Drafts remain
+unapproved. Context policy version 4 invalidates affected cached evidence and
+approval fingerprints.
+
+The saved spec request, rebuilt through the current context builder and active
+configuration, passed on its first attempt in 251 seconds: one model step,
+zero tool calls, 6,312 input tokens and 760 output tokens. Ollama confirmed the
+32,768-token allocation. Source files and workflow approvals were unchanged
+during validation. The report is
+`.kitchen/validation/rad-spec-context-fix/current-framework-final/report.json`.
+All 430 tests pass, along with TypeScript checking and lint. The full regression
+report is `.kitchen/validation/rad-spec-context-fix/tests-final.json`.
+
+Provider and context-policy changes make the prior intent approval stale under
+the existing fingerprint rules. Normal intent rerun and human reapproval are
+required before continuing the feature's spec station.
 
 ## Execution findings
 
@@ -22,7 +54,7 @@ retained correctly for after-input reuse. The benchmark preserves supplied
 token policies, and a new replay script reads saved prompts without changing
 the original project's Kitchen state.
 
-All 428 tests across 28 files pass, along with TypeScript checking and lint
+The initial implementation passed 428 tests across 28 files, TypeScript checking and lint
 with zero warnings. The full-suite run suppresses only Node 26's existing
 `DEP0205` warning for that process. Its report is
 `.kitchen/validation/dsh-recovery-tests-thinking.json`.
@@ -92,8 +124,8 @@ the exact structured request. Both attempts supplied complete usage, totalling
 Generation qualification is separate from normal candidate review: the initial successful plans named
 a `vitest` check profile while the saved human-controlled profile map was
 empty. Profile configuration remains operator work at the normal preparation
-and test-plan gates. No generated plan has been applied to rad, and no default
-model or project configuration has been promoted. The broader token-efficiency
+and test-plan gates. The initial qualification saved the configuration for
+review; the follow-up above applies it to rad. The broader token-efficiency
 comparison remains open.
 
 ## Objective

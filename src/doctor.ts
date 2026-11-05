@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.ts";
+import { profileReadiness } from "./readiness.ts";
 import { discoveryAuthor } from "./discovery.ts";
 import { stationOrder } from "./domain.ts";
 import { runProcess } from "./process.ts";
@@ -480,10 +481,9 @@ export async function doctor(
   results.push({
     id: "check-profiles",
     required: false,
-    status: Object.keys(config.profiles).length ? "passed" : "unverified",
-    reason:
-      Object.keys(config.profiles).join(", ") ||
-      "Run kitchen init, then configure project-specific check profiles in kitchen.config.json before the test plan.",
+    status: profileReadiness(config).length ? "unverified" : "passed",
+    reason: `Effective configuration root: ${path.resolve(root)}. ` +
+      (profileReadiness(config).join(" ") || `Configured profiles: ${Object.keys(config.profiles).join(", ")}.`),
   });
   return results;
 }

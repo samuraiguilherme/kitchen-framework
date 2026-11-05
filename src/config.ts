@@ -229,6 +229,8 @@ function validateProfile(name: string, value: Profile): void {
     value.parser === "exit-code"
   )
     throw new Error(`Behavioral profile ${name} requires test counts.`);
+  if (value.parser === "exit-code" && value.args.some((arg) => arg.includes("{reportFile}")))
+    throw new Error(`Profile ${name} reportFile requires a counted test parser.`);
   if (
     value.kind === "browser" &&
     (!value.preview?.build || !value.args.some((a) => a.includes("{baseUrl}")))

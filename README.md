@@ -231,6 +231,12 @@ Codex/Claude defaults remain in place until local model qualification is complet
 
 Root `kitchen.config.json` supplies versioned finite profiles for the repository's Vitest packages, architecture checks and human observations. Select appropriate profiles in each test plan. Check profiles are human-controlled executable configuration; agents cannot supply arbitrary commands.
 
+Before test-plan authoring, Kitchen requires a configured `kind: "unit"` profile. Missing configuration stops the run before calling a provider or replacing the previous candidate. Configure profiles in the main checkout's `kitchen.config.json` or `kitchen.config.local.json`; the error identifies that effective root. Rerunning test-plan can replace obsolete profile references in an earlier proposal.
+
+Unit checks must be required and select explicit files from the accepted `unitTestFiles` manifest. Production modules and existing regression files cannot be added to that execution list. For a full existing suite, configure a separate `kind: "command"` profile with `parser: "vitest-json"` and no file filter: it still requires nonzero executed tests and a valid passing report. Use `acIds: []` for regression/build checks that do not establish a named criterion; the scoped new unit tests supply the behavioral RED/GREEN evidence. Duplicate unknown-profile diagnostics list all affected checks once per profile.
+
+For large JSON test reports, add `"--outputFile={reportFile}"` to the Vitest profile arguments. Kitchen supplies a fresh path in the check's evidence directory, parses the complete report, and hashes it with the raw process evidence. Reports must be regular files no larger than 128 MiB; missing, stale, malformed or oversized reports block the check. Process output remains limited to 20 MB, and exit status, test counts, skipped cases and criterion coverage retain the same validation.
+
 ```json
 {
   "providers": {
@@ -325,7 +331,14 @@ Example profile to adapt and review for your package:
 
 Implement the package's planned `test/kitchen-browser-check.mjs` wrapper to accept that URL, invoke Playwright with a dedicated config and JSON reporter, and set `use.baseURL` from `KITCHEN_BASE_URL`. The wrapper/config belong in the approved file scope and integration test plan. The explicit argument plus environment makes the target reviewable; missing wrappers or fixtures block verification.
 
-Manual profile observations are passed via `run --observations <json>`:
+Interactive `run` commands collect missing manual profile observations in the terminal, with two answers per check:
+
+1. The result and what you observed, for example `passed: The sidebar subtitle displays ESPAÇO DE LAUDOS (test).` Start with `passed:`, `failed:`, or `not-applicable:`; include the reason for N/A.
+2. The existing evidence file path(s), relative to the feature worktree or absolute inside it. Separate multiple files with semicolons; paths containing spaces can be quoted. Save new screenshots in an ignored directory such as `.local/evidence/` so collecting evidence does not change candidate source.
+
+The prompt identifies the check, its acceptance criteria and the worktree. Invalid answers are requested again; a blank answer leaves the check unverified. Kitchen records the observation and snapshots the evidence before approval. Human waiting time is excluded from active run time. No JSON file is needed for this flow.
+
+For non-interactive runs, or to supply observations in advance, use `run --observations <json>`. Checks already supplied this way do not prompt:
 
 ```json
 [
@@ -463,11 +476,76 @@ Publication rechecks source, accepted tests, branch, local/remote base, every or
 
 ## Validate the framework
 
+Use the core lane while editing, then run the complete gate before accepting a
+framework change:
+
 ```powershell
+pnpm test:core
+pnpm test:watch
 pnpm test
 pnpm check:types
 pnpm lint
 ```
+
+`test:core` runs deterministic contracts, configuration, token/retry accounting,
+RAD failure fixtures and replay validation. `test:watch` watches that same lane.
+Use `pnpm test:integration` for the remaining Git, CLI, worktree, process,
+loopback and filesystem tests. New test files belong to integration until
+explicitly classified in `test-lanes.ts`; `pnpm test` always includes both lanes.
+Files run in at most two isolated workers; tests inside each file remain serial.
+The workflow tests share fixture helpers, with separate approval, dialogue,
+document, execution, preparation, publication and latency suites.
+
+`pnpm test:preflight` checks loopback HTTP, directory symlinks, process-tree
+termination and Git file transport. Integration and full runs execute that
+preflight first and retain `.kitchen/test-runs/<id>/environment.json`. Missing
+capabilities exit with code 2 before running tests; they never count as skipped
+or passing tests. Git transport is restricted to local files for these tests.
+On Node 26 the runner suppresses only `DEP0205` in child processes, preserving
+other warnings. Run integration in an environment with the required capabilities.
+
+### Replay a saved station
+
+Capture from the main checkout's effective configuration root. Capture reads the
+project and creates a new local evidence directory without calling a model:
+
+```powershell
+pnpm test:replay --capture <saved-role-directory> --project <main-checkout> --output <new-bundle>
+pnpm test:replay --bundle <bundle> --output <new-offline-result>
+```
+
+The bundle contains eligible source files, hashes, the saved and rebuilt current
+prompts, effective provider configuration and raw provider evidence. Keep it in
+trusted local storage: it contains project source and prompts. The source is
+captured now; it does not reconstruct a historical checkout. Saved check-profile
+and acceptance-criterion inputs are extracted from the original prompt when
+available, with fallback provenance recorded in the report. Offline replay
+requires no access to the original project and makes no provider calls. Rejected
+candidates exit with code 1 and retain their diagnostics.
+
+For an explicit live experiment, select the saved or current prompt. Each run
+gets a separate source copy, fresh provider session and new evidence directory:
+
+```powershell
+pnpm test:replay --bundle <bundle> --live --mode current --output <new-live-result>
+```
+
+Use `--config <json>` to compare another `providers.author` or `providers.review`
+configuration for the captured role. Bundle hashes are verified before and after
+replay, and source changes by a provider reject its candidate. No captured
+approval is imported, and no candidate is applied to the original project.
+Reports include prompt/configuration identities, duration, every provider attempt
+and available token usage. Compare matching frozen bundles serially for local
+inference, alternate baseline/candidate order, and separate cold/warm results.
+
+`pnpm test:live` lists the explicit live qualification commands. Pass
+`--live --config <pinned-config.json>` to run the existing paired token benchmark;
+other benchmark flags such as `--cases`, `--iterations` and `--stop-on-failure`
+are forwarded. Neither parser
+success nor the token benchmark's source inspection establishes model quality.
+Promote a prompt/model change only after independent requirement review,
+seeded-defect detection and normal Kitchen baseline RED and candidate GREEN
+execution. The live replay report always records `qualityQualified: false`.
 
 The framework's own intent, spec, plan, test plan and verification record are in `docs/design/`.
 

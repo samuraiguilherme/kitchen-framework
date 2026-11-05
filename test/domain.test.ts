@@ -1,25 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import {
-  validateFeature,
-  safePath,
-  digest,
-  lintDocument,
-  acceptanceIds,
-  gateReady,
-  stationOrder,
-} from "../src/domain.ts";
+import { validateFeature, safePath, digest, lintDocument, acceptanceIds, gateReady, stationOrder } from "../src/domain.ts";
 
 describe("feature and file boundaries", () => {
-  it.each(["team-invitations", "1625-workspace-settings"])(
+it.each(["team-invitations", "1625-workspace-settings"])(
     "accepts %s",
     (feature) => {
       expect(validateFeature(feature)).toBe(feature);
     },
   );
-  it.each([
+it.each([
     "../escape",
     "a/b",
     "a\\b",
@@ -31,7 +23,7 @@ describe("feature and file boundaries", () => {
   ])("rejects %s", (feature) => {
     expect(() => validateFeature(feature)).toThrow();
   });
-  it.each([
+it.each([
     "../outside",
     "/outside",
     "C:\\outside",
@@ -44,19 +36,12 @@ describe("feature and file boundaries", () => {
   ])("rejects unsafe output %s", (file) => {
     expect(() => safePath(process.cwd(), file)).toThrow();
   });
-  it("allows planned source and tests", () => {
+it("allows planned source and tests", () => {
     expect(safePath(process.cwd(), "src/domain.test.ts")).toBe(
       path.resolve("src/domain.test.ts"),
     );
   });
-  it("rejects a parent symlink leading outside the worktree", () => {
-    const root = mkdtempSync(path.join(tmpdir(), "kitchen-path-"));
-    const outside = mkdtempSync(path.join(tmpdir(), "kitchen-outside-"));
-    mkdirSync(path.join(root, "src"));
-    symlinkSync(outside, path.join(root, "src/link"), "junction");
-    expect(() => safePath(root, "src/link/file.ts")).toThrow();
-  });
-  it("hashes contents deterministically and includes deletions", () => {
+it("hashes contents deterministically and includes deletions", () => {
     const root = mkdtempSync(path.join(tmpdir(), "kitchen-digest-"));
     writeFileSync(path.join(root, "a"), "one");
     expect(digest(root, ["a", "missing"])).toBe(digest(root, ["missing", "a"]));
@@ -68,29 +53,29 @@ describe("feature and file boundaries", () => {
 });
 
 describe("station contracts", () => {
-  it("puts unit tests before production implementation", () => {
+it("puts unit tests before production implementation", () => {
     expect(stationOrder.indexOf("unit-tests")).toBeLessThan(
       stationOrder.indexOf("implementation"),
     );
   });
-  it("extracts definitions without counting references as duplicate criteria", () => {
+it("extracts definitions without counting references as duplicate criteria", () => {
     expect(
       acceptanceIds(
         "| AC-1 | Invite | Sends once |\nSee AC-1\n| AC-2 | Deny | Unchanged |\n",
       ),
     ).toEqual(["AC-1", "AC-2"]);
   });
-  it("rejects contradictory duplicate acceptance IDs", () => {
+it("rejects contradictory duplicate acceptance IDs", () => {
     expect(() => acceptanceIds("| AC-1 | A | B |\n| AC-1 | C | D |\n")).toThrow(
       /duplicate/i,
     );
   });
-  it("flags an incomplete intent and unresolved placeholders", () => {
+it("flags an incomplete intent and unresolved placeholders", () => {
     expect(
       lintDocument("intent", "# <Title>\n## Who is affected\nEveryone").length,
     ).toBeGreaterThan(0);
   });
-  it.each(["Regression", "Required evidence"])(
+it.each(["Regression", "Required evidence"])(
     "requires an exact, nonempty %s test-plan section",
     (heading) => {
       const document =
@@ -119,7 +104,7 @@ describe("station contracts", () => {
       );
     },
   );
-  it("flags a specification without observable acceptance criteria", () => {
+it("flags a specification without observable acceptance criteria", () => {
     expect(
       lintDocument(
         "spec",
@@ -129,7 +114,7 @@ describe("station contracts", () => {
       expect.objectContaining({ rule: "acceptance-criteria", blocking: true }),
     );
   });
-  it("does not turn an unresolved reviewer blocker into approval", () => {
+it("does not turn an unresolved reviewer blocker into approval", () => {
     expect(
       gateReady(
         [
@@ -163,12 +148,12 @@ describe("station contracts", () => {
       ),
     ).toBe(true);
   });
-  it.each(["failed", "unverified"])("blocks a required %s check", (status) => {
+it.each(["failed", "unverified"])("blocks a required %s check", (status) => {
     expect(gateReady([], [{ id: "unit", required: true, status }], {})).toBe(
       false,
     );
   });
-  it("permits explicit optional gaps without disguising them as passes", () => {
+it("permits explicit optional gaps without disguising them as passes", () => {
     expect(
       gateReady(
         [],

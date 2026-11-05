@@ -57,6 +57,15 @@ describe("RED and GREEN evidence", () => {
       classifyTestOutput(results("failed"), 1, "red", ["AC-1"]),
     ).toMatchObject({ status: "expected-red", total: 1, failed: 1 });
   });
+  it("recognizes assertion RED with real Vitest timeout-wrapper stack frames", () => {
+    const message = "AssertionError: expected 'old subtitle' to contain 'new subtitle'\n" +
+      "    at C:/project/tests/brand.test.ts:6:54\n" +
+      "    at runWithTimeout (file:///project/node_modules/@vitest/runner/chunk-hooks.js:1863:10)";
+    expect(classifyTestOutput(results("failed", message), 1, "red", ["AC-1"]))
+      .toMatchObject({ status: "expected-red", total: 1, failed: 1 });
+    expect(classifyTestOutput(results("failed", "Error: Test timed out in 5000ms\n    at runWithTimeout (runner.js:1:1)"), 1, "red", ["AC-1"]).status)
+      .not.toBe("expected-red");
+  });
   it("requires GREEN after implementation", () => {
     expect(
       classifyTestOutput(results("failed"), 1, "green", ["AC-1"]).status,
@@ -143,6 +152,7 @@ describe("local, explicit test plans", () => {
         },
       ],
       {},
+      ["src/a.test.ts"],
     );
     expect(findings.some((item) => item.rule === "unknown-profile")).toBe(true);
     expect(findings.some((item) => item.rule === "uncovered-criterion")).toBe(
@@ -164,6 +174,7 @@ describe("local, explicit test plans", () => {
           },
         ],
         { manual: { kind: "manual" } },
+        [],
       ).some((item) => item.rule === "unit-tests-required"),
     ).toBe(true);
   });

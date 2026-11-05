@@ -6,18 +6,16 @@ import { loadConfig } from "./config.ts";
 import { readPreparation } from "./preparation.ts";
 import { safePath } from "./domain.ts";
 import type { FeatureState, Station } from "./types.ts";
-import { evidenceBundle, mentionedPaths } from "./evidence-bundle.ts";
+import { contextDocuments, contextPaths, evidenceBundle } from "./evidence-bundle.ts";
 
 export function targetPaths(
   state: FeatureState,
   includePlanScope = true,
+  station?: Station,
 ): string[] {
   if (includePlanScope && state.stations.plan?.output?.allowedPaths.length)
     return state.stations.plan.output.allowedPaths;
-  const accepted = Object.values(state.stations).filter(record => record?.status === "approved")
-    .flatMap(record => record!.artifactFiles).filter(file => file.endsWith(".md"))
-    .map(file => readFileSync(safePath(state.worktree, file), "utf8")).join("\n");
-  const exact = mentionedPaths(state.request + "\n" + accepted);
+  const exact = contextPaths(state, contextDocuments(state, station));
   const explicit = [
     ...state.request.matchAll(/\b(?:apps|packages)\/[a-z0-9-]+\b/g),
   ].map((match) => match[0]);
@@ -54,7 +52,7 @@ export async function buildContext(
   const sections = [
     instructions(
       state.worktree,
-      targetPaths(state, !["intent", "spec"].includes(station)),
+      targetPaths(state, !["intent", "spec"].includes(station), station),
     ),
   ];
   for (const name of selected[station]) {
