@@ -417,7 +417,7 @@ async function invokeProviderAttempt(
         Math.min(remainingTimeout(), 10000),
         request.signal,
       );
-      progress.report(`local model available; digest=${modelIdentity.digest}`);
+      progress.report(`local model available; ${modelIdentity.digest ? `digest=${modelIdentity.digest}` : `contextWindow=${modelIdentity.contextWindow}`}`);
     }
     result = await runProcess({
       command: invocation.command,

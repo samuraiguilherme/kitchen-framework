@@ -158,6 +158,23 @@ describe("DSH bounded contract regeneration", () => {
     },
   );
 
+  it("regenerates a verify report returned in document before exposing a candidate", async () => {
+    const req = { ...request(), station: "verify" as const };
+    const corrected = { ...candidate, summary: "Reviewed candidate and recorded evidence.", document: null };
+    respond(completed(JSON.stringify({ ...corrected, document: "# Verification report\nAll required checks passed." }), "session-invalid-verify"));
+    respond(completed(JSON.stringify(corrected)), {}, () => {
+      expect(existsSync(path.join(req.runDir, "author-output.json"))).toBe(false);
+      expect(existsSync(path.join(req.runDir, "author-answer.json"))).toBe(false);
+    });
+    expect(await cliProvider(req)).toEqual(corrected);
+    expect(processMock).toHaveBeenCalledTimes(2);
+    expect(processMock.mock.calls[1]![0].input).toContain("Invalid verify author output");
+    expect(processMock.mock.calls[1]![0].input).toContain("KITCHEN CORRECTIVE REGENERATION");
+    expect(json(path.join(req.runDir, "author-schema.json")).properties.document).toMatchObject({ type: "null" });
+    expect(json(path.join(req.runDir, "author-attempts.json")).status).toBe("completed");
+    expect(json(path.join(req.runDir, "author-output.json"))).toEqual(corrected);
+  });
+
   it("fails a document station after one invalid correction without exposing a candidate", async () => {
     const req = { ...request(), station: "spec" as const };
     const invalid = { ...candidate, document: null };

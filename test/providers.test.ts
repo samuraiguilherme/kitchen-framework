@@ -16,6 +16,25 @@ const author = {
 const review = { summary: "Review", findings: [] };
 
 describe("provider contracts", () => {
+  it("requires a read-only verify response with a null document and no execution manifest", () => {
+    const candidate = { ...author, document: null, summary: "Reviewed candidate and runner evidence." };
+    expect(validateAuthorOutput(candidate, "verify")).toEqual(candidate);
+    const questions = { ...candidate, questions: [{ id: "evidence", text: "Where is the manual evidence?" }] };
+    expect(validateAuthorOutput(questions, "verify")).toEqual(questions);
+    const forbidden = {
+      document: "# Verification report\nAll required checks passed.",
+      files: [{ path: "src/answer.ts", action: "write", content: "export const answer = 42;", kind: "implementation" }],
+      allowedPaths: ["src/answer.ts"], unitTestFiles: ["src/answer.test.ts"], scaffoldFiles: ["src/answer.ts"],
+      checks: [{ id: "answer", profile: "unit", files: ["src/answer.test.ts"], acIds: ["AC-1"], required: true, expectation: "red" }],
+    };
+    for (const [key, value] of Object.entries(forbidden)) {
+      const output = { ...candidate, [key]: value };
+      expect(validateAuthorOutput(output)).toEqual(output);
+      expect(() => validateAuthorOutput(output, "verify")).toThrow("Invalid verify author output");
+    }
+    expect(() => validateAuthorOutput({ ...candidate, document: "" }, "verify")).toThrow("Invalid verify author output");
+  });
+
   it.each(["spec", "plan", "test-plan"] as const)(
     "requires a nonempty document and no source proposals at %s",
     (station) => {

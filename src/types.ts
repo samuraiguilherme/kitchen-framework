@@ -135,6 +135,7 @@ export interface ReviewOutput {
   findings: Finding[];
 }
 export interface DeepSeekOptions {
+  backend?: "ollama" | "kindi";
   version: string;
   baseURL: string;
   contextWindow: number;

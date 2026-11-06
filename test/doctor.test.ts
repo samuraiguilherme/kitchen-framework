@@ -89,6 +89,31 @@ afterEach(() => {
 });
 
 describe("live model readiness diagnostics", () => {
+  it("reports Kindi readiness and probes through DSH without Ollama metadata", async () => {
+    config({ providers: { author: { provider: "deepseek", model: "bonsai2-9b", dsh: {
+      backend: "kindi", version: "0.2.2-alpha.3", baseURL: "http://127.0.0.1:8093/v1",
+      contextWindow: 24576, maxTokens: 8192,
+    } }, timeoutMs: 3600000 } });
+    vi.mocked(fetch).mockImplementation(async () => new Response(JSON.stringify({ ok: true, model: "bonsai2-9b", ctx: 24576 })));
+    run.mockImplementation(async request => {
+      if (request.args.includes("@deepseek-ai/dsh@0.2.2-alpha.3")) {
+        if (request.args.includes("--version")) return { ...success, stdout: "0.2.2-alpha.3" };
+        expect(request.timeoutMs).toBeGreaterThan(180000);
+        return { ...success, stdout: [
+          { type: "session", sessionId: "kindi-probe" },
+          { type: "final", sessionId: "kindi-probe", reason: { kind: "completed" }, text: JSON.stringify(authorProbe) },
+        ].map(event => JSON.stringify(event)).join("\n") };
+      }
+      return fakeProcess(request);
+    });
+    const results = await doctor(root);
+    expect(results.find(check => check.id === "kindi-server")).toMatchObject({ status: "passed", required: true, reason: expect.stringContaining("Kindi reachable") });
+    expect(results.find(check => check.id === "deepseek-local")).toMatchObject({ status: "passed", reason: expect.stringContaining("Kindi /health reports ctx=24576") });
+    expect(results.find(check => check.id === "deepseek-model-1")).toMatchObject({ status: "passed" });
+    expect(results.some(check => check.id === "ollama-server")).toBe(false);
+    expect(vi.mocked(fetch).mock.calls.every(([url]) => new URL(String(url)).pathname === "/health")).toBe(true);
+  });
+
   it("reports Claude configuration and setup when its default reviewer is disabled", async () => {
     const before = loadConfig(root);
     const results = await doctor(root);

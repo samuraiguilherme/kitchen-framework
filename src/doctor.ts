@@ -363,15 +363,16 @@ export async function doctor(
   const servers = new Map<string, { id: string; models?: unknown[] }>();
   for (const [index, baseURL] of endpoints.entries()) {
     const result = inventoryResults[index]!;
-    const id = `ollama-server${index ? `-${index + 1}` : ""}`;
+    const backend = localRoles.find(role => role.dsh!.baseURL === baseURL)!.dsh!.backend === "kindi" ? "Kindi" : "Ollama";
+    const id = `${backend.toLowerCase()}-server${index ? `-${index + 1}` : ""}`;
     const available = result.status === "fulfilled";
     results.push({
       id,
       required: localRequired,
       status: available ? "passed" : localRequired ? "failed" : "unverified",
       reason: available
-        ? `Ollama reachable at ${baseURL}; ${result.value.length} installed model(s).`
-        : `Ollama unavailable at ${baseURL}: ${options.signal?.aborted ? "cancelled" : result.reason instanceof Error ? result.reason.message : String(result.reason)}. Start Ollama and complete local model setup.`,
+        ? `${backend} reachable at ${baseURL}; ${result.value.length} installed model(s).`
+        : `${backend} unavailable at ${baseURL}: ${options.signal?.aborted ? "cancelled" : result.reason instanceof Error ? result.reason.message : String(result.reason)}. Start ${backend} and complete local model setup.`,
     });
     servers.set(baseURL, {
       id,
@@ -392,7 +393,7 @@ export async function doctor(
       try {
         const identity = deepseekModelIdentity(role, server.models);
         check.status = "passed";
-        check.reason = `model=${identity.model}; endpoint=${identity.baseURL}; digest=${identity.digest}; pin=${role.dsh!.expectedModelDigest ? "matched" : "not configured"}; contextWindow=${role.dsh!.contextWindow}; maxTokens=${role.dsh!.maxTokens}; authorInitialCap=${role.dsh!.tokenPolicy?.outputTokens?.author ?? role.dsh!.maxTokens}; streamIdleTimeoutMs=${role.dsh!.streamIdleTimeoutMs ?? 300000}; maxTokenRetries=${role.dsh!.tokenPolicy?.maxTokenRetries ?? 0}. Verify loaded Ollama num_ctx with ollama ps; contextWindow alone does not allocate backend memory.`;
+        check.reason = `model=${identity.model}; endpoint=${identity.baseURL}; digest=${identity.digest ?? "not advertised"}; pin=${role.dsh!.expectedModelDigest ? "matched" : "not configured"}; contextWindow=${role.dsh!.contextWindow}; maxTokens=${role.dsh!.maxTokens}; authorInitialCap=${role.dsh!.tokenPolicy?.outputTokens?.author ?? role.dsh!.maxTokens}; streamIdleTimeoutMs=${role.dsh!.streamIdleTimeoutMs ?? 300000}; maxTokenRetries=${role.dsh!.tokenPolicy?.maxTokenRetries ?? 0}. ${role.dsh!.backend === "kindi" ? `Kindi /health reports ctx=${identity.contextWindow}.` : "Verify loaded Ollama num_ctx with ollama ps; contextWindow alone does not allocate backend memory."}`;
       } catch (error) {
         check.status = localRequired ? "failed" : "unverified";
         const installed = server.models.flatMap((model) =>
@@ -400,11 +401,11 @@ export async function doctor(
           typeof model === "object" &&
           "name" in model &&
           typeof model.name === "string" &&
-          /deepseek/i.test(model.name)
+          (role.dsh!.backend === "kindi" || /deepseek/i.test(model.name))
             ? [model.name]
             : [],
         );
-        check.reason = `${error instanceof Error ? error.message : String(error)} Installed DeepSeek models: ${installed.join(", ") || "none"}. Expected model=${role.model}.`;
+        check.reason = `${error instanceof Error ? error.message : String(error)} Installed ${role.dsh!.backend === "kindi" ? "Kindi" : "DeepSeek"} models: ${installed.join(", ") || "none"}. Expected model=${role.model}.`;
       }
     results.push(check);
     localPairs[index]?.prerequisites.push(server.id, id);
@@ -444,7 +445,7 @@ export async function doctor(
       else {
         const probeDir = path.join(runDir, check.id);
         options.onProgress?.(
-          `Checking ${label} with a small ${pair.config.provider === "deepseek" ? "local Ollama request" : "hosted request (uses model quota)"}.`,
+          `Checking ${label} with a small ${pair.config.provider === "deepseek" ? `local ${pair.config.dsh!.backend === "kindi" ? "Kindi" : "Ollama"} request` : "hosted request (uses model quota)"}.`,
         );
         try {
           await probeProvider(
@@ -452,7 +453,7 @@ export async function doctor(
             probeDir,
             Math.min(
               config.providers.timeoutMs,
-              pair.config.provider === "deepseek" ? 180000 : 60000,
+              pair.config.dsh?.backend === "kindi" ? 3600000 : pair.config.provider === "deepseek" ? 180000 : 60000,
             ),
             options.signal,
             contract,

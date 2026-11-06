@@ -58,6 +58,7 @@ export function validateDeepSeekConfig(config: RoleConfig): DeepSeekOptions {
     config.model.includes(":cloud") ||
     config.windowsSandbox !== undefined ||
     !options ||
+    (options.backend !== undefined && !["ollama", "kindi"].includes(options.backend)) ||
     typeof options.version !== "string" ||
     !exactVersion.test(options.version) ||
     !validURL ||
@@ -75,6 +76,9 @@ export function validateDeepSeekConfig(config: RoleConfig): DeepSeekOptions {
     throw new Error(
       "Invalid DeepSeek provider configuration: require an exact DSH version, explicit local model, loopback /v1 URL and positive context/output limits.",
     );
+  if (options.backend === "kindi" &&
+    (options.expectedModelDigest !== undefined || options.thinking !== undefined))
+    throw new Error("Kindi does not advertise Ollama digest or thinking metadata; omit dsh.expectedModelDigest and dsh.thinking.");
   if (options.tokenPolicy !== undefined)
     validateTokenPolicy(options.tokenPolicy, options);
   if (tokenBudget(options, options.maxTokens).initialInputTarget < 1)
@@ -111,15 +115,23 @@ export async function readDeepSeekModels(
   signal?: AbortSignal,
 ) {
   const options = validateDeepSeekConfig(config);
-  const response = await fetch(new URL("/api/tags", options.baseURL), {
+  const kindi = options.backend === "kindi";
+  const response = await fetch(new URL(kindi ? "/health" : "/api/tags", options.baseURL), {
     signal: signal
       ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
       : AbortSignal.timeout(timeoutMs),
     redirect: "error",
   });
   if (!response.ok)
-    throw new Error(`Ollama model inventory failed: HTTP ${response.status}`);
+    throw new Error(`${kindi ? "Kindi health" : "Ollama model inventory"} failed: HTTP ${response.status}`);
   const body: unknown = await response.json();
+  if (kindi) {
+    const health = body as { ok?: unknown; model?: unknown; ctx?: unknown } | null;
+    if (!health || health.ok !== true || typeof health.model !== "string" || !health.model.trim() ||
+      !Number.isSafeInteger(health.ctx) || (health.ctx as number) < 1)
+      throw new Error("Invalid Kindi health response: require a ready model and positive context size.");
+    return [{ name: health.model, context_length: health.ctx }];
+  }
   const models =
     body && typeof body === "object" && "models" in body
       ? body.models
@@ -129,10 +141,12 @@ export async function readDeepSeekModels(
   return models as unknown[];
 }
 
-export function deepseekModelIdentity(config: RoleConfig, models: unknown[]) {
+export function deepseekModelIdentity(config: RoleConfig, models: unknown[]): {
+  model: string; baseURL: string; digest?: string; contextWindow?: number;
+} {
   const options = validateDeepSeekConfig(config);
   const model = models.find(
-    (item): item is { name: string; digest?: unknown } =>
+    (item): item is { name: string; digest?: unknown; context_length?: unknown } =>
       item !== null &&
       typeof item === "object" &&
       "name" in item &&
@@ -140,8 +154,14 @@ export function deepseekModelIdentity(config: RoleConfig, models: unknown[]) {
   );
   if (!model)
     throw new Error(
-      `Local model ${config.model} is not installed. Complete the Ollama setup first.`,
+      `Local model ${config.model} is not installed. Complete the ${options.backend === "kindi" ? "Kindi" : "Ollama"} setup first.`,
     );
+  if (options.backend === "kindi") {
+    const contextWindow = model.context_length;
+    if (!Number.isSafeInteger(contextWindow) || (contextWindow as number) < options.contextWindow)
+      throw new Error(`Kindi context ${contextWindow} is smaller than configured contextWindow=${options.contextWindow}.`);
+    return { model: config.model!, baseURL: options.baseURL, contextWindow: contextWindow as number };
+  }
   const digest = normalizeDigest(model.digest);
   if (!digest) throw new Error("Ollama did not report a valid model digest.");
   if (
@@ -186,10 +206,12 @@ export async function checkDeepSeekModel(
 
 export async function readDeepSeekAllocation(
   config: RoleConfig,
-  digest: string,
+  digest: string | undefined,
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<number | undefined> {
+  if (config.dsh!.backend === "kindi")
+    return deepseekModelIdentity(config, await readDeepSeekModels(config, timeoutMs, signal)).contextWindow;
   const response = await fetch(new URL("/api/ps", config.dsh!.baseURL), {
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
     redirect: "error",
@@ -270,14 +292,15 @@ export function prepareDeepSeek(
     "command-feedback",
     "goal-round-driver",
   ];
+  const providerId = options.backend === "kindi" ? "kindi-local" : "ollama-local";
   const overlay = [
     ...disabled.map((id) => ({ id, disabled: true })),
     {
       id: "llm-pi-ai",
       config: {
         providers: {
-          "ollama-local": {
-            apiKeyEnv: "KITCHEN_OLLAMA_API_KEY",
+          [providerId]: {
+            apiKeyEnv: options.backend === "kindi" ? "KITCHEN_KINDI_API_KEY" : "KITCHEN_OLLAMA_API_KEY",
             api: "openai-completions",
             baseURL: options.baseURL,
             compat: {
@@ -301,7 +324,7 @@ export function prepareDeepSeek(
     },
     {
       id: "agent-default-model",
-      config: { provider: "ollama-local", model: request.config.model,
+      config: { provider: providerId, model: request.config.model,
         ...(options.thinking !== undefined ? { reasoningEffort: options.thinking ? "high" : "off" } : {}),
       },
     },
@@ -361,7 +384,9 @@ export function prepareDeepSeek(
     env: {
       DSH_HOME: home,
       DSH_TELEMETRY_MODE: "DISABLED",
-      KITCHEN_OLLAMA_API_KEY: "ollama",
+      ...(options.backend === "kindi"
+        ? { KITCHEN_KINDI_API_KEY: process.env.KITCHEN_KINDI_API_KEY ?? "none" }
+        : { KITCHEN_OLLAMA_API_KEY: "ollama" }),
     },
     input,
     measurementFile,

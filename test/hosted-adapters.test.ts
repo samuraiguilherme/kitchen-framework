@@ -129,6 +129,27 @@ describe("hosted CLI adapters with fake executables", () => {
     }
   });
 
+  it.each(["codex", "claude"] as const)("uses a read-only verify schema through the %s adapter", async (provider) => {
+    const response = {
+      summary: "Reviewed candidate and runner evidence.", questions: [], document: null,
+      files: [], allowedPaths: [], unitTestFiles: [], scaffoldFiles: [], checks: [],
+    };
+    const { root, file } = executable(false, "", response);
+    const req = { station: "verify" as const, role: "author" as const, prompt: "Verify candidate", cwd: root,
+      runDir: path.join(root, "run"), timeoutMs: 10000, config: { provider, executable: file } };
+    expect(await hostedProvider(req)).toEqual(response);
+    const schema = JSON.parse(readFileSync(path.join(req.runDir, "author-schema.json"), "utf8"));
+    expect(schema.properties.document).toMatchObject({ type: "null" });
+    for (const key of ["files", "allowedPaths", "unitTestFiles", "scaffoldFiles", "checks"])
+      expect(schema.properties[key].maxItems).toBe(0);
+    expect(schema.anyOf).toBeUndefined();
+    const bad = executable(false, "", { ...response, document: "# Verification report" });
+    const runDir = path.join(bad.root, "run");
+    await expect(hostedProvider({ ...req, cwd: bad.root, runDir,
+      config: { provider, executable: bad.file } })).rejects.toThrow("Invalid verify author output");
+    expect(existsSync(path.join(runDir, "author-output.json"))).toBe(false);
+  });
+
   it("accepts Claude discovery citations through the executable boundary", async () => {
     const response = { summary: "Source", evidence: [{ path: "src/a.ts", line: 2, hash: "" }], unresolved: [] };
     const { root, file } = executable(false, "", response);

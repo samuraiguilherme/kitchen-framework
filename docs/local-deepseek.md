@@ -4,6 +4,48 @@ Kitchen can launch a pinned DeepSeek Harness CLI through npx and route it to a
 local Ollama model. This is opt-in; existing Codex and Claude settings continue
 to work. The adapter targets DSH `0.2.2-alpha.3` and Node 24.9 or newer.
 
+## Connect Kindi
+
+The same DSH adapter can use [Kindi](https://github.com/ahtx/kindi) instead of
+Ollama. Set `dsh.backend` to `"kindi"`; omitting it retains Ollama behavior.
+Read `http://127.0.0.1:8093/health` and use its `model` and `ctx` values:
+
+```json
+{
+  "providers": {
+    "author": {
+      "provider": "deepseek",
+      "model": "bonsai2-9b",
+      "dsh": {
+        "backend": "kindi",
+        "version": "0.2.2-alpha.3",
+        "baseURL": "http://127.0.0.1:8093/v1",
+        "contextWindow": 24576,
+        "maxTokens": 8192,
+        "streamIdleTimeoutMs": 3600000
+      }
+    },
+    "timeoutMs": 3600000
+  }
+}
+```
+
+Merge this into `kitchen.config.local.json`. Kindi recommends a 30–60 minute
+request timeout for initial prompt reading; the adapter disables automatic API
+retries. Requests within an invocation are sequential. Avoid simultaneous
+Kitchen runs against the same Kindi server, which serves one request at a time.
+Prewarm the pinned harness with `pnpm dlx @deepseek-ai/dsh@0.2.2-alpha.3 --version`.
+Kindi needs no key by default; if the server requires one, set
+`KITCHEN_KINDI_API_KEY` in Kitchen's environment.
+
+Remove `dsh.expectedModelDigest` and `dsh.thinking` when switching from Ollama.
+Kindi does not expose Ollama's digest or thinking capability metadata; thinking
+is off by default on Kindi. Kitchen checks the ready model and context through
+`/health` and rejects a configured context larger than the server reports.
+`kitchen doctor` reports a `kindi-server` check and validates the structured
+response through DSH. The provider name stays `deepseek` because it selects
+the harness, while `dsh.backend` selects the inference server.
+
 ## Prepare Ollama
 
 On Windows, install Ollama and run its local server with cloud features disabled.

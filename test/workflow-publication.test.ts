@@ -36,6 +36,14 @@ it.each([[undefined, "develop", "codex"], [false, "main", "claude"], [true, "rel
       expect(report).toContain("AC-1");
       expect(report).toContain("expected-red");
       expect(report).toContain("passed");
+      const verified = await setup.kitchen.status("answer");
+      expect(verified.stations.verify?.output?.document).toBeNull();
+      expect(verified.stations.verify?.artifactFiles).toEqual(["docs/features/answer/verification.md"]);
+      const verification = readFileSync(path.join(verified.worktree, "docs/features/answer/verification.md"), "utf8");
+      expect(verification).toContain("expected-red");
+      expect(verification).toContain("passed");
+      expect(setup.calls.find(call => call.station === "verify" && call.role === "author")?.prompt)
+        .toContain("The runner reruns required checks and generates verification.md");
       const preview = await setup.kitchen.publish("answer", { preview: true });
       expect(setup.counts()).toEqual({ created: 0, pushed: 0 });
       expect(preview.body).toContain("test-plan.md");
