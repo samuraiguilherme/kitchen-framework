@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.ts";
 import { profileReadiness } from "./readiness.ts";
 import { discoveryAuthor } from "./discovery.ts";
-import { stationOrder } from "./domain.ts";
+import { isProposalStation, isSpecialistStation, stationOrder } from "./domain.ts";
 import { runProcess } from "./process.ts";
 import { probeProvider } from "./providers.ts";
 import type { ProbeContract } from "./providers.ts";
@@ -71,6 +71,10 @@ export async function doctor(
         roles.review ? `stations.${station}.review` : "providers.review",
         "review",
       );
+    if (isSpecialistStation(station) && roles?.specialistsEnabled)
+      addPair(roles.author ?? config.providers.author, `stations.${station}.specialistsEnabled`, "discovery");
+    if (isProposalStation(station) && Object.values(roles?.proposalGroups ?? {}).some(groups => groups !== false))
+      addPair(roles?.author ?? config.providers.author, `stations.${station}.proposalGroups`, "proposal");
   }
   if (config.discovery?.enabled)
     addPair(

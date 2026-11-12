@@ -44,6 +44,7 @@ describe("DeepSeek token policy", () => {
     expect(generationLimit(request, true)).toBe(256);
     expect(generationLimit({ ...request, role: "review" })).toBe(1024);
     expect(generationLimit({ ...request, kind: "discovery" })).toBe(768);
+    expect(generationLimit({ ...request, kind: "specialist" })).toBe(768);
   });
   it("retains partial usage and counts cached input and reasoning without double counting", () => {
     const result = summarizeTokenEvents([

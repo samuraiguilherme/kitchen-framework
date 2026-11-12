@@ -14,6 +14,8 @@ import {
   digest,
   gateReady,
   hash,
+  isProposalStation,
+  isSpecialistStation,
   lintDocument,
   requireAwaitingApproval,
   rubricVersion,
@@ -21,7 +23,7 @@ import {
   stationOrder,
   validateFeature,
 } from "./domain.ts";
-import { baseBranch, loadConfig } from "./config.ts";
+import { baseBranch, loadConfig, proposalGroupsFor } from "./config.ts";
 import { approvalFingerprint } from "./approval-fingerprint.ts";
 import { checkDeepSeekPins, checkDeepSeekModel } from "./deepseek.ts";
 import { executeChecks, validateCheckPlan } from "./checks.ts";
@@ -43,7 +45,9 @@ import {
 } from "./providers.ts";
 import { instructions, rubric, stationPrompt } from "./prompts.ts";
 import { buildContext, targetPaths } from "./context.ts";
-import { discover, discoveryPolicy } from "./discovery.ts";
+import { discoveryPolicy, preparePlanContext } from "./discovery.ts";
+import { runSpecialists, specialistPolicyVersion } from "./specialists.ts";
+import { runFileProposals } from "./file-proposals.ts";
 import { promptSections, runMetrics, timed, persistMetrics } from "./metrics.ts";
 import { contextPolicyVersion } from "./evidence-bundle.ts";
 import { compactDeepSeek } from "./token-budget.ts";
@@ -152,6 +156,7 @@ export class Kitchen {
       scaffoldFiles: testPlan.scaffoldFiles.filter(
         (file) => !Object.hasOwn(runtime, file),
       ),
+      runtimePaths: Object.keys(runtime),
       checks: testPlan.checks,
     };
   }
@@ -190,6 +195,8 @@ export class Kitchen {
           index >= 2 && config.discovery?.enabled
             ? config.discovery
             : undefined,
+        specialistsEnabled: stationConfig?.specialistsEnabled === true ? true : undefined,
+        proposalGroups: proposalGroupsFor(config, station, state.feature),
       },
       profiles: [
         "test-plan",
@@ -375,7 +382,7 @@ export class Kitchen {
         fileCount: before.fileCount,
         byteCount: before.byteCount,
       });
-    let context = await timed(
+    const contextWork = () => timed(
       options.metrics,
       "station context",
       () => buildContext(state, station, this.root, compactDeepSeek(roleConfig), {
@@ -383,47 +390,41 @@ export class Kitchen {
       }),
       options.onProgress,
     );
+    let context: string;
     if (station === "plan" && role === "author" && config.discovery?.enabled) {
-      const results = await timed(
-        options.metrics,
-        "parallel discovery",
-        () =>
-          discover({
-            root: this.root,
-            state,
-            config,
-            codeFingerprint: before.codeFingerprint,
-            provider: this.provider,
-            runDir,
-            signal: options.signal,
-            onProgress: options.onProgress,
-            onMetrics: (metrics) => options.metrics?.providers.push(metrics),
-            onCache: (hit) => {
-              if (options.metrics) {
-                const cache = (options.metrics.discoveryCache ??= {
-                  hits: 0, misses: 0,
-                });
-                if (hit) cache.hits++;
-                else cache.misses++;
-              }
-            },
-          }),
-        options.onProgress,
+      const prepared = await preparePlanContext(
+        {
+          root: this.root,
+          state,
+          config,
+          before,
+          provider: this.provider,
+          runDir,
+          signal: options.signal,
+          metrics: options.metrics,
+          onProgress: options.onProgress,
+          onMetrics: (metrics) => options.metrics?.providers.push(metrics),
+          onCache: (hit) => {
+            if (options.metrics) {
+              const cache = (options.metrics.discoveryCache ??= {
+                hits: 0, misses: 0,
+              });
+              if (hit) cache.hits++;
+              else cache.misses++;
+            }
+          },
+        },
+        contextWork,
       );
-      if (
-        (await timed(options.metrics, "source snapshot after discovery", () =>
-          sourceFingerprint(state.worktree, state.feature),
-        )) !== before.fingerprint
-      )
-        throw new Error(
-          "Discovery provider changed repository contents outside the runner.",
-        );
+      context = prepared.context;
       state.discovery = {
         codeFingerprint: before.codeFingerprint,
         specFingerprint: state.stations.spec?.approval?.fingerprint,
         policyFingerprint: discoveryPolicy(config),
-        results,
+        results: prepared.results,
       };
+    } else {
+      context = await contextWork();
     }
     if (
       !["intent", "spec"].includes(station) &&
@@ -434,6 +435,26 @@ export class Kitchen {
       state.discovery.policyFingerprint === discoveryPolicy(config)
     )
       context += `\n\nDISCOVERY (read-only findings; acceptance still belongs to this station):\n${JSON.stringify(state.discovery.results)}`;
+    const specialistsEnabled = role === "author" && isSpecialistStation(station) &&
+      config.stations[station]?.specialistsEnabled === true;
+    let specialistContext = "";
+    if (specialistsEnabled) {
+      const results = await timed(
+        options.metrics,
+        "specialist analysis",
+        () => runSpecialists({
+          station, state, config, before,
+          provider: this.provider,
+          runDir: path.join(runDir, `specialists${suffix}`),
+          signal: options.signal,
+          metrics: options.metrics,
+          onProgress: options.onProgress,
+        }),
+        options.onProgress,
+      );
+      specialistContext = `\n\nSPECIALIST ANALYSIS (advisory source material)\nCheck findings against the accepted documents and source. Put material unresolved operator decisions in questions. Only the runner supplies fresh check results.\n${JSON.stringify(results)}`;
+      context += specialistContext;
+    }
     const artifacts = digest(
       state.worktree,
       state.stations[station]?.artifactFiles ?? [],
@@ -450,6 +471,34 @@ export class Kitchen {
     const record = state.stations[station]!;
     const prior = record.authorSession;
     delete record.authorSession;
+    if (role === "author" && isProposalStation(station)) {
+      const groups = proposalGroupsFor(config, station, state.feature);
+      if (groups) {
+        const contract = this.contracts(state);
+        const protectedPaths = [
+          ...[...docs, "verification"].map(name => this.document(state, name)),
+          ...contract.runtimePaths,
+        ];
+        if (station === "implementation") {
+          for (const file of contract.unitTestFiles)
+            if (digest(state.worktree, [file]) !== state.testHashes?.[file])
+              throw new Error(`Approved test integrity changed: ${file}`);
+          protectedPaths.push(...contract.unitTestFiles);
+        }
+        const eligible = station === "unit-tests"
+          ? [...contract.unitTestFiles, ...contract.scaffoldFiles]
+          : contract.allowedPaths.filter(file => !protectedPaths.includes(file));
+        const output = await timed(options.metrics, "file proposals", () => runFileProposals({
+          station, worktree: state.worktree, feature: state.feature, groups, eligible, protectedPaths,
+          source: before.fingerprint, prompt: fullPrompt, provider: this.provider, config: roleConfig,
+          timeoutMs: config.providers.timeoutMs, runDir: path.join(runDir, role + suffix),
+          signal: options.signal, metrics: options.metrics, onProgress: options.onProgress,
+        }), options.onProgress);
+        if (JSON.stringify(proposalGroupsFor(loadConfig(this.root), station, state.feature)) !== JSON.stringify(groups))
+          throw new Error("Proposal group configuration changed during authoring. Rerun the station.");
+        return output;
+      }
+    }
     const reusable = role === "author" && roleConfig.provider === "deepseek" && roleConfig.sessionReuse === "after-input";
     const modelIdentity = reusable ? await checkDeepSeekModel(roleConfig, 10000, options.signal) : undefined;
     const sessionFingerprint = (conversationLength: number) => hash(JSON.stringify({
@@ -461,6 +510,7 @@ export class Kitchen {
       upstream: stationOrder.slice(0, stationOrder.indexOf(station)).map(name => state.stations[name]?.approval?.fingerprint),
       conversation: state.conversation.slice(0, conversationLength), profiles: config.profiles,
       preparation: state.preparation, discovery: discoveryPolicy(config),
+      specialists: specialistsEnabled ? specialistPolicyVersion : undefined,
     }));
     const sessionRoot = path.join(this.storage.directory(state.feature), "sessions", station, "author");
     const resume = reusable && prior !== undefined && prior.fingerprint === sessionFingerprint(prior.conversationLength) &&
@@ -473,7 +523,7 @@ export class Kitchen {
     if (session) mkdirSync(session.home, { recursive: true });
     const conversationLength = resume ? prior!.conversationLength : state.conversation.length;
     const prompt = resume
-      ? `Continue as the author at the ${station} station for ${state.feature}. The runner verified unchanged source, upstream approvals, model, instructions and output contract.\nUse the already supplied repository evidence; do not reread unchanged content.\nDo not write files, execute checks, use git writes, send messages or publish. The runner owns proposals, checks and human approval.\nHuman/model continuation (roles are significant):\n${JSON.stringify(state.conversation.slice(conversationLength))}\nResolve the saved questions using these answers. Return either questions only (document=null and all proposal/manifest arrays empty), or a complete candidate with questions=[]. Return exactly the required JSON object.`
+      ? `Continue as the author at the ${station} station for ${state.feature}. The runner verified unchanged source, upstream approvals, model, instructions and output contract.\nUse the already supplied repository evidence; do not reread unchanged content.\nDo not write files, execute checks, use git writes, send messages or publish. The runner owns proposals, checks and human approval.\nHuman/model continuation (roles are significant):\n${JSON.stringify(state.conversation.slice(conversationLength))}${specialistContext}\nResolve the saved questions using these answers. Return either questions only (document=null and all proposal/manifest arrays empty), or a complete candidate with questions=[]. Return exactly the required JSON object.`
       : fullPrompt;
     let sessionId: string | undefined;
     let sessionHome = session?.home;
@@ -482,6 +532,7 @@ export class Kitchen {
       sections: promptSections(prompt),
       total: Buffer.byteLength(prompt),
     });
+    if (options.signal?.aborted) throw new Error("Station cancelled.");
     const output = await timed(
       options.metrics,
       `${role}${suffix} provider`,
@@ -1037,6 +1088,17 @@ export class Kitchen {
           "Approved tests cannot be rewritten by implementation. Return to unit-tests with a requirement-based explanation.",
         );
     }
+    if (station === "unit-tests") {
+      const proposed = new Set(changes.map(change => change.path));
+      const missing = contract.unitTestFiles.filter(file => !proposed.has(file) && !existsSync(safePath(state.worktree, file)));
+      if (missing.length)
+        throw new Error(
+          `Missing approved unit test files (${missing.length}): ${missing.join(", ")}. A summary-only handoff is not a completed test submission. Return unresolved prerequisites in questions, or run kitchen prepare for approved runtime preparation.`,
+        );
+      if (contract.scaffoldFiles.some(file => !proposed.has(file) &&
+          (!state.scaffoldContents?.[file] || !existsSync(safePath(state.worktree, file)))))
+        throw new Error("Every approved scaffold needs an independently reviewed minimal proposal.");
+    }
     for (const change of changes) {
       const file = safePath(state.worktree, change.path);
       if (change.action === "delete") {
@@ -1054,13 +1116,6 @@ export class Kitchen {
     if (station === "unit-tests") {
       // Scaffold proposals remain in the reviewed output/baseline snapshot; their bodies are implemented later.
       record.artifactFiles = contract.unitTestFiles;
-      const missing = contract.unitTestFiles.filter(
-        (file) => !existsSync(safePath(state.worktree, file)),
-      );
-      if (missing.length)
-        throw new Error(
-          `Missing approved unit test files (${missing.length}): ${missing.join(", ")}. A summary-only handoff is not a completed test submission. Return unresolved prerequisites in questions, or run kitchen prepare for approved runtime preparation.`,
-        );
     }
     if (station === "implementation")
       record.artifactFiles = contract.allowedPaths;
@@ -1072,7 +1127,7 @@ export class Kitchen {
       ts.ScriptTarget.Latest,
       true,
     );
-    let invalid = false;
+    let invalid = !change.content?.trim();
     const visit = (node: ts.Node) => {
       const isUndefined = (expression: ts.Expression): boolean =>
         (ts.isIdentifier(expression) && expression.text === "undefined") ||

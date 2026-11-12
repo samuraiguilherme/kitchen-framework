@@ -45,7 +45,8 @@ async function fakeProcess(options: ProcessOptions): Promise<ProcessResult> {
   if (isProbe(options)) {
     const schemaIndex = options.args.indexOf("--output-schema");
     const schema = JSON.parse(schemaIndex >= 0 ? readFileSync(options.args[schemaIndex + 1]!, "utf8") : options.args[options.args.indexOf("--json-schema") + 1]!);
-    const output = schema.properties.questions ? authorProbe : schema.properties.evidence
+    const output = schema.properties.document ? authorProbe : schema.properties.questions
+      ? { summary: "Kitchen model probe OK", questions: [], files: [] } : schema.properties.evidence
       ? { summary: "Kitchen model probe OK", evidence: [], unresolved: [] }
       : { summary: "Kitchen model probe OK", findings: [] };
     const index = options.args.indexOf("--output-last-message");
@@ -186,6 +187,25 @@ describe("live model readiness diagnostics", () => {
     expect(run.mock.calls.filter(([p]) => p.command === "claude" && p.args.includes("auth"))).toHaveLength(1);
     expect(results.filter(r => r.id.includes("-model-")).every(r => r.status === "passed")).toBe(true);
     expect(results.find(r => r.reason?.includes("contract=discovery"))?.reason).toContain("providers.author");
+  });
+
+  it("probes the analysis contract for an opted-in specialist station", async () => {
+    config({ providers: { author: { provider: "claude" } }, stations: { verify: { specialistsEnabled: true } } });
+    const results = await doctor(root);
+    expect(results.find(r => r.reason?.includes("contract=discovery"))).toMatchObject({
+      status: "passed", reason: expect.stringContaining("stations.verify.specialistsEnabled"),
+    });
+  });
+
+  it("probes the file proposal contract for opted-in features", async () => {
+    config({ providers: { author: { provider: "claude" } }, stations: {
+      "unit-tests": { proposalGroups: { first: [["a.test.ts"], ["b.test.ts"]] } },
+      implementation: { proposalGroups: { first: [["a.ts"], ["b.ts"]] } },
+    } });
+    const results = await doctor(root);
+    const checks = results.filter(r => r.reason?.includes("contract=proposal"));
+    expect(checks).toHaveLength(1);
+    expect(checks[0]).toMatchObject({ status: "passed", reason: expect.stringContaining("stations.unit-tests.proposalGroups") });
   });
 
   it("fails author readiness when the provider returns only a valid review", async () => {

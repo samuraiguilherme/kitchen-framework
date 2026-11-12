@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { describe, expect, it, vi } from "vitest";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import path from "node:path";
+import * as context from "../src/context.ts";
 import { Kitchen } from "../src/kitchen.ts";
 import type { ProviderRequest } from "../src/types.ts";
 import { git, fixture } from "./workflow-fixture.ts";
@@ -189,7 +190,13 @@ describe("station latency safeguards", () => {
       await kitchen.run("answer", station);
       await kitchen.approve("answer", station, { actor: "chef" });
     }
-    const plan = await kitchen.run("answer", "plan");
+    const buildContext = context.buildContext;
+    const contextSpy = vi.spyOn(context, "buildContext").mockImplementationOnce(async (...args) => {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(workers).toBe(2);
+      return buildContext(...args);
+    });
+    const plan = await kitchen.run("answer", "plan").finally(() => contextSpy.mockRestore());
     expect(workers).toBe(2);
     expect(plan.stations.plan?.status).toBe("awaiting-approval");
     await expect(kitchen.run("answer", "test-plan")).rejects.toThrow(
@@ -205,5 +212,41 @@ describe("station latency safeguards", () => {
     expect(
       setup.calls.filter((call) => call.station === "intent").at(-1)?.prompt,
     ).not.toContain("DISCOVERY (read-only findings");
+  });
+
+  it("rejects uncited source changes during discovery before caching or calling the plan author", async () => {
+    const setup = fixture();
+    const file = path.join(setup.root, "kitchen.config.json");
+    const config = JSON.parse(readFileSync(file, "utf8"));
+    config.discovery = { enabled: true };
+    writeFileSync(file, JSON.stringify(config));
+    const kitchen = new Kitchen({
+      root: setup.root,
+      provider: async (request) => {
+        if (request.kind !== "discovery") return setup.provider(request);
+        if (request.prompt.includes("(implementation)"))
+          writeFileSync(path.join(request.cwd, "src/uncited.ts"), "export const changed = true;\n");
+        return {
+          summary: "Existing answer module",
+          evidence: [{ path: "src/answer.ts", line: 1, hash: "" }],
+          unresolved: [],
+        };
+      },
+    });
+    const started = await kitchen.start("answer", { request: "Return 42." });
+    for (const station of ["intent", "spec"] as const) {
+      await kitchen.run("answer", station);
+      await kitchen.approve("answer", station, { actor: "chef" });
+    }
+    await expect(kitchen.run("answer", "plan")).rejects.toThrow(
+      "Discovery provider changed repository contents outside the runner.",
+    );
+    const failed = await kitchen.status("answer");
+    expect(failed.stations.plan?.status).toBe("failed");
+    expect(failed.stations.plan?.approval).toBeUndefined();
+    expect(failed.discovery).toBeUndefined();
+    expect(setup.calls.some(({ station }) => station === "plan")).toBe(false);
+    expect(existsSync(path.join(setup.root, ".kitchen/features/answer/discovery"))).toBe(false);
+    expect(existsSync(path.join(started.worktree, "docs/features/answer/plan.md"))).toBe(false);
   });
 });

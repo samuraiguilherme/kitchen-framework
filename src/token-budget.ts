@@ -75,7 +75,7 @@ export function validateTokenPolicy(
 export function generationLimit(request: ProviderRequest, probe = false): number {
   const options = request.config.dsh!;
   const kind = probe ? "probe"
-    : request.kind === "discovery" ? "discovery"
+    : request.kind === "discovery" || request.kind === "specialist" ? "discovery"
     : request.role === "review" ? "review" : "author";
   return (kind && options.tokenPolicy?.outputTokens?.[kind]) || options.maxTokens;
 }

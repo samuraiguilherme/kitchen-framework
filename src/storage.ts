@@ -4,13 +4,13 @@ import {
   openSync,
   closeSync,
   readFileSync,
-  renameSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { validateFeature } from "./domain.ts";
+import { replaceFileSync } from "./atomic-file.ts";
 import type { FeatureState } from "./types.ts";
 
 export class Storage {
@@ -43,7 +43,7 @@ export class Storage {
     mkdirSync(this.directory(state.feature), { recursive: true });
     const temp = this.file(state.feature) + "." + randomUUID() + ".tmp";
     writeFileSync(temp, JSON.stringify(state, null, 2));
-    renameSync(temp, this.file(state.feature));
+    replaceFileSync(temp, this.file(state.feature));
   }
   async lock<T>(feature: string, action: () => Promise<T>): Promise<T> {
     mkdirSync(this.directory(feature), { recursive: true });

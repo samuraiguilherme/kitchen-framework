@@ -115,7 +115,7 @@ export function providerProgress(request: ProviderRequest, probe = false) {
       return;
     }
     if (request.config.provider === "deepseek") {
-      const failure = deepseekEventFailure(event, probe || request.station === "intent");
+      const failure = deepseekEventFailure(event, probe || request.noTools === true || request.station === "intent");
       if (failure) return failure;
       if (event.type === "tool_call") {
         metrics.firstToolMs ??= elapsedMs;

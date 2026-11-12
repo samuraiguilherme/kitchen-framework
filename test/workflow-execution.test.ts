@@ -2,9 +2,73 @@ import { describe, expect, it } from "vitest";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Kitchen } from "../src/kitchen.ts";
+import type { Config } from "../src/types.ts";
 import { checks, git, fixture, acceptDocs } from "./workflow-fixture.ts";
 
 describe("station workflow execution", () => {
+it("runs independent checks concurrently at all three execution stations before asking for approval", async () => {
+    const setup = fixture();
+    const configFile = path.join(setup.root, "kitchen.config.json");
+    const config: Config = JSON.parse(readFileSync(configFile, "utf8"));
+    const ids = ["answer-a", "answer-b"];
+    for (const [index, id] of ids.entries()) {
+      const cwd = `packages/${id}`;
+      mkdirSync(path.join(setup.root, cwd), { recursive: true });
+      writeFileSync(path.join(setup.root, cwd, ".gitkeep"), "");
+      config.profiles[id] = {
+        ...config.profiles.unit!,
+        cwd,
+        parallelSafe: true,
+        args: ["../../unit-runner.mjs", id, ids[1 - index]!, "{reportFile}"],
+      };
+    }
+    writeFileSync(configFile, JSON.stringify(config));
+    writeFileSync(path.join(setup.root, "unit-runner.mjs"), `
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { setTimeout } from "node:timers/promises";
+const [id, peer, report] = process.argv.slice(2);
+const marker = (name) => path.join(path.dirname(report), name + ".started");
+writeFileSync(marker(id), "");
+const deadline = Date.now() + 5000;
+while (!existsSync(marker(peer)) && Date.now() < deadline) await setTimeout(10);
+if (!existsSync(marker(peer))) throw new Error("Peer check did not start concurrently");
+const passed = readFileSync(new URL("./src/answer.ts", import.meta.url), "utf8").includes("= 42");
+const assertion = {fullName:"AC-1 returns 42", status:passed ? "passed" : "failed",
+  failureMessages:passed ? [] : ["AssertionError: expected 0 to be 42"]};
+writeFileSync(report, JSON.stringify({numTotalTests:1, numPassedTests:passed ? 1 : 0,
+  numFailedTests:passed ? 0 : 1, testResults:[{assertionResults:[assertion]}]}));
+process.exitCode = passed ? 0 : 1;
+`);
+    git(setup.root, "add", "kitchen.config.json", "unit-runner.mjs", "packages");
+    git(setup.root, "commit", "-m", "Configure independent unit check fixtures");
+    git(setup.root, "update-ref", "refs/remotes/origin/develop", git(setup.root, "rev-parse", "HEAD"));
+    const kitchen = new Kitchen({
+      root: setup.root,
+      github: setup.gateway,
+      provider: async (request) => {
+        const output = await setup.provider(request);
+        if (request.station === "test-plan" && "checks" in output)
+          output.checks = ids.map((id) => ({ ...checks[0]!, id, profile: id }));
+        return output;
+      },
+    });
+    await acceptDocs(kitchen);
+    const stations = ["unit-tests", "implementation", "verify"] as const;
+    for (const [index, station] of stations.entries()) {
+      const state = await kitchen.run("answer", station);
+      const record = state.stations[station];
+      expect(record?.status).toBe("awaiting-approval");
+      expect(record?.checks.map(({ id, status }) => [id, status])).toEqual(
+        ids.map((id) => [id, station === "unit-tests" ? "expected-red" : "passed"]),
+      );
+      const next = stations[index + 1];
+      const advance = next ? kitchen.run("answer", next) : kitchen.publish("answer", { preview: true });
+      await expect(advance).rejects.toThrow(`Approve ${station}`);
+      await kitchen.approve("answer", station, { actor: "chef" });
+    }
+  });
+
 it("collects manual evidence during implementation before review and approval", async () => {
     const setup = fixture(0, { implementation: { reviewEnabled: true } });
     const configFile = path.join(setup.root, "kitchen.config.json");

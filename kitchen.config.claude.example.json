@@ -14,6 +14,7 @@
       "version": "1.0.0",
       "kind": "unit",
       "cwd": ".",
+      "parallelSafe": true,
       "command": "pnpm",
       "args": ["exec", "vitest", "run", "{files}", "--reporter=json", "--outputFile={reportFile}"],
       "parser": "vitest-json",

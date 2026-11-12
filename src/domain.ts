@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
-import type { FeatureState, Finding, Station, StationRecord } from "./types.ts";
+import type { FeatureState, Finding, ProposalStation, SpecialistStation, Station, StationRecord } from "./types.ts";
 
 export const stationOrder = [
   "intent",
@@ -13,6 +13,12 @@ export const stationOrder = [
   "verify",
   "publish",
 ] as const;
+export function isSpecialistStation(station: string): station is SpecialistStation {
+  return station === "spec" || station === "test-plan" || station === "verify";
+}
+export function isProposalStation(station: string): station is ProposalStation {
+  return station === "unit-tests" || station === "implementation";
+}
 export const rubricVersion = "1.0.0";
 export const hash = (value: string | Buffer) =>
   createHash("sha256").update(value).digest("hex");

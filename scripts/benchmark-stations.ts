@@ -7,11 +7,13 @@ import { parseArgs } from "node:util";
 import { executeChecks } from "../src/checks.ts";
 import { loadConfig } from "../src/config.ts";
 import { buildContext } from "../src/context.ts";
-import { discover } from "../src/discovery.ts";
+import { discover, preparePlanContext } from "../src/discovery.ts";
 import { hash } from "../src/domain.ts";
 import { evidenceBundle } from "../src/evidence-bundle.ts";
+import { runFileProposals } from "../src/file-proposals.ts";
 import { git, sourceSnapshot, type SourceSnapshot } from "../src/git.ts";
-import type { CheckDefinition, DiscoveryResult, FeatureState, Profile, Provider, ProviderRequest } from "../src/types.ts";
+import { runSpecialists } from "../src/specialists.ts";
+import type { CheckDefinition, DiscoveryResult, FeatureState, FileProposal, Profile, ProposalGroups, ProposalStation, Provider, ProviderRequest, SpecialistStation } from "../src/types.ts";
 
 // Offline experiments against production functions. Provider latency is synthetic;
 // checks spawn real Node processes. No provider CLI, install, push or PR is used.
@@ -111,17 +113,20 @@ assertions.push("Discovery: hosted=2 simultaneous workers, local policy=1; decla
 
 // H2: independent command checks overlap; resource conflicts and barriers serialize.
 const checkSamples: Record<string, unknown>[] = [];
-const ids = ["one", "two", "three", "four"];
+const ids = ["suite-one", "one", "three", "four"];
+for (const id of ids) mkdirSync(path.join(fixture, id));
+const checkModes = ["serial", "independent", "shared-resource", "shared-cwd", "exclusive-barrier"];
 const definitions: CheckDefinition[] = ids.map(id => ({ id, profile: id, files: [], acIds: [], required: true, expectation: "green" }));
 const checkCode = "const id=process.argv[1];const start=Date.now();setTimeout(()=>console.log(JSON.stringify({id,start,end:Date.now()})),180);";
 for (let iteration = 0; iteration < iterations; iteration++) {
-  const modes = ["serial", "independent", "shared-resource", "exclusive-barrier"];
+  const modes = [...checkModes];
   if (iteration % 2) modes.reverse();
   for (const mode of modes) {
     const profiles: Record<string, Profile> = Object.fromEntries(ids.map(id => [id, {
       kind: "command", command: process.execPath, args: ["-e", checkCode, id], parser: "exit-code", timeoutMs: 10000,
       parallelSafe: mode !== "serial" && !(mode === "exclusive-barrier" && id === "three"),
-      resourceGroup: mode === "shared-resource" ? "shared" : id,
+      cwd: mode === "shared-cwd" ? "." : id,
+      resourceGroup: mode === "shared-resource" ? "shared" : mode === "shared-cwd" ? id : undefined,
     }]));
     const runDir = path.join(fixture, ".kitchen/runs", `checks-${mode}-${iteration}`);
     const measured = await measure(() => executeChecks({
@@ -129,6 +134,10 @@ for (let iteration = 0; iteration < iterations; iteration++) {
     }));
     assert.deepEqual(measured.result.map(item => item.id), ids);
     assert(measured.result.every(item => item.status === "passed"));
+    for (const result of measured.result) {
+      const files = ["check", "raw"].map(kind => path.join(runDir, `${kind}-${result.id}.json`));
+      assert.deepEqual(result.evidenceHashes, Object.fromEntries(files.map(file => [file, hash(readFileSync(file))])));
+    }
     const spans = ids.map(id => {
       const raw = JSON.parse(readFileSync(path.join(runDir, `raw-${id}.json`), "utf8"));
       return JSON.parse(raw.stdout) as { id: string; start: number; end: number };
@@ -137,7 +146,7 @@ for (let iteration = 0; iteration < iterations; iteration++) {
       .sort((a, b) => a.time - b.time || a.delta - b.delta);
     let active = 0, maximum = 0;
     for (const event of events) { active += event.delta; maximum = Math.max(maximum, active); }
-    assert.equal(maximum, ["serial", "shared-resource"].includes(mode) ? 1 : 2);
+    assert.equal(maximum, ["serial", "shared-resource", "shared-cwd"].includes(mode) ? 1 : 2);
     if (mode === "exclusive-barrier") {
       const barrier = spans[2]!;
       assert(spans.slice(0, 2).every(span => span.end <= barrier.start));
@@ -148,39 +157,44 @@ for (let iteration = 0; iteration < iterations; iteration++) {
 }
 report.checks = {
   samples: checkSamples,
-  summaries: Object.fromEntries(["serial", "independent", "shared-resource", "exclusive-barrier"].map(mode =>
+  summaries: Object.fromEntries(checkModes.map(mode =>
     [mode, summarize(checkSamples.filter(x => x.mode === mode).map(x => x.ms as number))])),
 };
-assertions.push("Real Node check processes: independent profiles use exactly two slots; shared resources serialize; exclusive barrier waits for earlier checks and blocks later checks; all four statuses and result order are preserved.");
+assertions.push("Real Node check processes: independent package profiles use two slots; shared groups and working directories serialize even with opt-in; exclusive barriers, manifest order, and exact artifact ownership are preserved.");
 
-// H3: context and read-only discovery can join before the author on one snapshot.
+// H3: compare the runner's plan preparation with the previous sequential order.
 config.providers.author = { provider: "codex" };
 const contextSamples: Record<string, unknown>[] = [];
 for (let iteration = 0; iteration < iterations; iteration++) {
+  const paired: Array<Awaited<ReturnType<typeof preparePlanContext>>> = [];
   for (const mode of iteration % 2 ? ["overlap", "sequential"] : ["sequential", "overlap"]) {
     const before = await sourceSnapshot(fixture, state.feature);
-    const key = `context-${mode}-${iteration}`;
-    const provider: Provider = async request => { await delay(110); return output(request); };
-    const context = () => buildContext(state, "plan", fixture, false, { codeFingerprint: before.codeFingerprint, persist: true });
-    const discovery = () => discover(discoveryOptions(provider, key));
+    const configRoot = path.join(directory, `context-${mode}-${iteration}`);
+    let calls = 0;
+    const provider: Provider = async request => { calls++; await delay(110); return output(request); };
+    const options = { root: configRoot, state, config, provider, runDir: path.join(configRoot, "run") };
+    const build = () => buildContext(state, "plan", configRoot, false, { codeFingerprint: before.codeFingerprint, persist: true });
     const measured = await measure(async () => {
-      if (mode === "overlap") return Promise.all([context(), discovery()] as const);
-      return [await context(), await discovery()] as const;
+      if (mode === "overlap") return preparePlanContext({ ...options, before }, build);
+      const context = await build();
+      const results = await discover({ ...options, codeFingerprint: before.codeFingerprint });
+      assert.equal((await sourceSnapshot(fixture, state.feature)).fingerprint, before.fingerprint);
+      return { context, results };
     });
-    assert(measured.result[0].includes("src/answer.ts"));
-    assert.deepEqual(measured.result[1].map(item => item.summary), ["implementation", "verification"]);
-    assert.equal((await sourceSnapshot(fixture, state.feature)).fingerprint, before.fingerprint);
-    const reference = await context();
-    assert.equal(measured.result[0], reference);
-    contextSamples.push({ iteration, mode, ms: measured.ms, contextBytes: Buffer.byteLength(reference) });
+    assert.equal(calls, 2);
+    assert(measured.result.context.includes("src/answer.ts"));
+    assert.deepEqual(measured.result.results.map(item => item.summary), ["implementation", "verification"]);
+    paired.push(measured.result);
+    contextSamples.push({ iteration, mode, ms: measured.ms, contextBytes: Buffer.byteLength(measured.result.context) });
   }
+  assert.deepEqual(paired[0], paired[1]);
 }
 report.contextOverlap = {
   samples: contextSamples,
   sequential: summarize(contextSamples.filter(x => x.mode === "sequential").map(x => x.ms as number)),
   overlap: summarize(contextSamples.filter(x => x.mode === "overlap").map(x => x.ms as number)),
 };
-assertions.push("Prototype composition of production functions: context plus discovery can overlap; context text, ordered child results and source identity remain unchanged before author handoff.");
+assertions.push("Production plan preparation, including the post-discovery source guard: overlap produces identical context and ordered discovery results with the same provider call count as sequential preparation.");
 
 // H4: current evidence cache preserves correctness but still rebuilds on a hit.
 const bundleSamples: Record<string, unknown>[] = [];
@@ -204,6 +218,103 @@ report.evidenceCache = { samples: bundleSamples,
   warm: summarize(bundleSamples.map(x => x.warmMs as number)),
 };
 assertions.push("Evidence cache hits return identical text and a selected source edit invalidates the cache even with the same supplied code key.");
+
+// H5: exercise the production specialist batch with source validation and evidence writes.
+const specialistStations: SpecialistStation[] = ["spec", "test-plan", "verify"];
+const specialistSamples: Array<{ station: SpecialistStation; iteration: number; mode: string; ms: number; maximum: number; calls: number }> = [];
+for (const station of specialistStations) {
+  for (let iteration = 0; iteration < iterations; iteration++) {
+    const before = await sourceSnapshot(fixture, state.feature);
+    const paired: Array<Awaited<ReturnType<typeof runSpecialists>>> = [];
+    for (const mode of iteration % 2 ? ["parallel", "serial"] : ["serial", "parallel"]) {
+      config.stations[station] = { specialistsEnabled: true, author: { provider: mode === "serial" ? "deepseek" : "codex" } };
+      let active = 0, maximum = 0, calls = 0;
+      const provider: Provider = async request => {
+        assert.equal(request.station, station);
+        assert.equal(request.kind, "specialist");
+        maximum = Math.max(maximum, ++active);
+        await delay(calls++ === 0 ? 70 : 110);
+        active--;
+        return {
+          summary: path.basename(request.runDir),
+          evidence: [{ path: "src/answer.ts", line: 1, hash: "" }],
+          unresolved: [],
+        };
+      };
+      const runDir = path.join(directory, `specialists-${station}-${mode}-${iteration}`);
+      const measured = await measure(() => runSpecialists({ station, state, config, before, provider, runDir }));
+      assert.equal(calls, 2);
+      assert.equal(maximum, mode === "serial" ? 1 : 2);
+      for (const result of measured.result) {
+        assert.equal(result.evidence[0]?.hash, hash(readFileSync(path.join(fixture, "src/answer.ts"))));
+        assert.deepEqual(JSON.parse(readFileSync(path.join(runDir, result.taskId, "validated-output.json"), "utf8")), result);
+      }
+      paired.push(measured.result);
+      specialistSamples.push({ station, iteration, mode, ms: measured.ms, maximum, calls });
+    }
+    assert.deepEqual(paired[0], paired[1]);
+  }
+}
+report.specialists = {
+  samples: specialistSamples,
+  summaries: Object.fromEntries(specialistStations.map(station => [station,
+    Object.fromEntries(["serial", "parallel"].map(mode => [mode, summarize(specialistSamples
+      .filter(sample => sample.station === station && sample.mode === mode).map(sample => sample.ms))])),
+  ])),
+};
+assertions.push("Specialist batches at spec, test-plan, and verify produce the same ordered, source-verified evidence with two calls, using one local slot or two hosted slots. Timing includes source validation and excludes authoring and approvals.");
+
+// H6: measure proposal generation and the guarded join before candidate application.
+const proposalGroups: Record<ProposalStation, ProposalGroups> = {
+  "unit-tests": [["src/answer.test.ts", "src/preservation.test.ts"], ["src/bonus.test.ts"]],
+  implementation: [["src/answer.ts", "src/interface.ts"], ["src/bonus.ts"]],
+};
+const proposalStations = ["unit-tests", "implementation"] as const;
+const proposalSamples: Array<{ station: ProposalStation; iteration: number; mode: string; ms: number; maximum: number; calls: number }> = [];
+for (const station of proposalStations) {
+  const groups = proposalGroups[station];
+  for (let iteration = 0; iteration < iterations; iteration++) {
+    const before = await sourceSnapshot(fixture, state.feature);
+    const paired: Array<Awaited<ReturnType<typeof runFileProposals>>> = [];
+    for (const mode of iteration % 2 ? ["parallel", "serial"] : ["serial", "parallel"]) {
+      let active = 0, maximum = 0, calls = 0;
+      const provider: Provider = async (request): Promise<FileProposal> => {
+        assert.equal(request.station, station);
+        assert.equal(request.kind, "proposal");
+        const index = path.basename(request.runDir) === "group-1" ? 0 : 1;
+        calls++;
+        maximum = Math.max(maximum, ++active);
+        await delay(index === 0 ? 110 : 70);
+        active--;
+        return { summary: `Group ${index + 1}`, questions: [], files: [...groups[index]].reverse().map(file => ({
+          path: file, action: "write", content: `// Proposal for ${file}\n`, kind: station === "unit-tests" ? "test" : "implementation",
+        })) };
+      };
+      const runDir = path.join(directory, `proposals-${station}-${mode}-${iteration}`);
+      const measured = await measure(() => runFileProposals({
+        station, worktree: fixture, feature: state.feature, groups, eligible: groups.flat(),
+        protectedPaths: station === "implementation" ? ["src/answer.test.ts"] : [],
+        source: before.fingerprint, prompt: "Draft your assigned files.", provider, runDir,
+        config: { provider: mode === "serial" ? "deepseek" : "codex" }, timeoutMs: 10000,
+      }));
+      assert.equal(calls, 2);
+      assert.equal(maximum, mode === "serial" ? 1 : 2);
+      assert.deepEqual(measured.result.files.map(file => file.path), groups.flat());
+      assert.deepEqual(JSON.parse(readFileSync(path.join(runDir, "validated-output.json"), "utf8")), measured.result);
+      paired.push(measured.result);
+      proposalSamples.push({ station, iteration, mode, ms: measured.ms, maximum, calls });
+    }
+    assert.deepEqual(paired[0], paired[1]);
+  }
+}
+report.proposals = {
+  samples: proposalSamples,
+  summaries: Object.fromEntries(proposalStations.map(station => [station,
+    Object.fromEntries(["serial", "parallel"].map(mode => [mode, summarize(proposalSamples
+      .filter(sample => sample.station === station && sample.mode === mode).map(sample => sample.ms))])),
+  ])),
+};
+assertions.push("File proposal batches produce the same ownership-ordered joined candidate with one local slot or two hosted slots. Timing covers proposal generation and validation, before applying files, checks, or approval.");
 
 // Real checkout scan cost is measured separately from the tiny scheduling fixture.
 const snapshotSamples: Array<SourceSnapshot & { iteration: number; ms: number }> = [];

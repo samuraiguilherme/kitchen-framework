@@ -16,7 +16,7 @@ import type { ProcessResult } from "./process.ts";
 import { providerProgress } from "./provider-progress.ts";
 import { promptSections } from "./metrics.ts";
 import { generationLimit, summarizeTokenEvents } from "./token-budget.ts";
-import { resolveProviderExecutable } from "./provider-executable.ts";
+import { codexCliEnvironment, resolveProviderExecutable } from "./provider-executable.ts";
 import {
   checkDeepSeekModel,
   DeepSeekContractError,
@@ -29,6 +29,7 @@ import { classifyDeepSeekFailure, DeepSeekFailure } from "./deepseek-failure.ts"
 import type { DeepSeekFailureInfo } from "./deepseek-failure.ts";
 import type {
   AuthorOutput,
+  FileProposal,
   Provider,
   ProviderName,
   ProviderMetrics,
@@ -160,6 +161,11 @@ export const discoverySchema = object({
   },
   unresolved: strings,
 });
+const fileProposalSchema = object({
+  summary: str,
+  questions: authorSchema.properties.questions,
+  files: authorSchema.properties.files,
+});
 const ajv = new Ajv({ allErrors: true });
 const authorValidator = ajv.compile(authorSchema);
 const intentAuthorValidator = ajv.compile(intentAuthorSchema);
@@ -167,6 +173,12 @@ const documentAuthorValidator = ajv.compile(documentAuthorSchema);
 const verifyAuthorValidator = ajv.compile(verifyAuthorSchema);
 const reviewValidator = ajv.compile(reviewSchema);
 const discoveryValidator = ajv.compile(discoverySchema);
+const fileProposalValidator = ajv.compile(fileProposalSchema);
+export function validateFileProposal(value: unknown): FileProposal {
+  if (!fileProposalValidator(value))
+    throw new Error(`Invalid file proposal: ${ajv.errorsText(fileProposalValidator.errors)}`);
+  return value as unknown as FileProposal;
+}
 export function validateDiscoveryOutput(value: unknown) {
   if (!discoveryValidator(value))
     throw new Error(
@@ -351,7 +363,8 @@ async function invokeProviderAttempt(
     request.config.provider,
   );
   const schema =
-    request.kind === "discovery"
+    request.kind === "proposal" ? fileProposalSchema
+    : request.kind === "discovery" || request.kind === "specialist"
       ? discoverySchema
       : request.role === "author"
         ? authorOutputSchema
@@ -376,7 +389,10 @@ async function invokeProviderAttempt(
     );
   if (probe && request.config.provider === "codex")
     invocation.args.push("--skip-git-repo-check");
-  if (probe || request.station === "intent") {
+  if (request.config.provider === "codex" && request.codexReasoningEffort)
+    invocation.args.push("-c", `model_reasoning_effort=${JSON.stringify(request.codexReasoningEffort)}`);
+  const noTools = probe || request.noTools === true || request.station === "intent";
+  if (noTools) {
     if (request.config.provider === "claude")
       invocation.args[invocation.args.indexOf("--tools") + 1] = "";
     else if (request.config.provider === "codex")
@@ -422,7 +438,7 @@ async function invokeProviderAttempt(
     result = await runProcess({
       command: invocation.command,
       args: invocation.args,
-      ...(deepseek ? { env: deepseek.env } : {}),
+      env: deepseek?.env ?? (request.config.provider === "codex" ? codexCliEnvironment() : undefined),
       cwd: request.cwd,
       input,
       timeoutMs: remainingTimeout(),
@@ -450,6 +466,17 @@ async function invokeProviderAttempt(
   }
   const metrics = progress.metrics();
   metrics.completedAt = new Date().toISOString();
+  if (request.config.provider === "claude") {
+    try {
+      const envelope = JSON.parse(result.stdout);
+      if (Number.isFinite(envelope.total_cost_usd) && envelope.total_cost_usd >= 0)
+        metrics.reportedCostUsd = envelope.total_cost_usd;
+      if (envelope.usage)
+        metrics.usage = Object.fromEntries(Object.entries(envelope.usage).filter(
+          (entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]),
+        ));
+    } catch { /* Partial responses may have no usage or cost. */ }
+  }
   if (result.code !== 0)
     metrics.terminationReason = result.cancelled ? "cancelled" : result.timedOut ? "timed-out" : metrics.terminationReason ?? "failed";
   if (deepseek) {
@@ -543,7 +570,7 @@ async function invokeProviderAttempt(
     // Stream/session/tool failures are terminal. Only a completed final answer
     // that fails JSON or output validation is eligible for regeneration.
     const final = deepseek
-      ? deepseekFinalAnswer(raw, probe || request.station === "intent")
+      ? deepseekFinalAnswer(raw, noTools)
       : undefined;
     if (request.session?.id && final?.sessionId !== request.session.id)
       throw new Error("DSH resumed a different session; no candidate accepted.");
@@ -552,7 +579,8 @@ async function invokeProviderAttempt(
       output = final
         ? JSON.parse(final.text)
         : parseProviderOutput(request.config.provider, raw);
-      if (request.kind === "discovery") validateDiscoveryOutput(output);
+      if (request.kind === "proposal") validateFileProposal(output);
+      else if (request.kind === "discovery" || request.kind === "specialist") validateDiscoveryOutput(output);
       else if (request.role === "author")
         validateAuthorOutput(output, probe ? undefined : request.station);
       else validateReviewOutput(output);
@@ -568,15 +596,6 @@ async function invokeProviderAttempt(
     if (deepseek) writeFileSync(answerFile, JSON.stringify(output, null, 2));
     if (final) request.onSession?.(final.sessionId, deepseek!.home);
     metrics.actionableOutputMs = metrics.durationMs;
-    if (request.config.provider === "claude") {
-      const envelope = JSON.parse(result.stdout);
-      if (envelope.usage)
-        metrics.usage = Object.fromEntries(
-          Object.entries(envelope.usage).filter(
-            (entry): entry is [string, number] => typeof entry[1] === "number",
-          ),
-        );
-    }
     writeFileSync(
       path.join(request.runDir, `${request.role}-output.json`),
       JSON.stringify(output, null, 2),
@@ -669,7 +688,8 @@ async function invokeProvider(
 }
 export const cliProvider: Provider = async (request) => {
   const output = await invokeProvider(request);
-  return request.kind === "discovery"
+  return request.kind === "proposal" ? validateFileProposal(output)
+    : request.kind === "discovery" || request.kind === "specialist"
     ? validateDiscoveryOutput(output)
     : request.role === "author"
       ? validateAuthorOutput(output, request.station)
@@ -678,7 +698,7 @@ export const cliProvider: Provider = async (request) => {
 // Existing integrations can retain this name while migrating to local providers.
 export const hostedProvider = cliProvider;
 
-export type ProbeContract = "author" | "review" | "discovery";
+export type ProbeContract = "author" | "review" | "discovery" | "proposal";
 
 export async function probeProvider(
   config: RoleConfig,
@@ -698,13 +718,14 @@ export async function probeProvider(
         }
       : contract === "discovery"
         ? { summary, evidence: [], unresolved: [] }
-        : { summary, findings: [] };
+        : contract === "proposal" ? { summary, questions: [], files: [] }
+          : { summary, findings: [] };
   try {
     const output = await invokeProvider(
       {
-        station: contract === "discovery" ? "plan" : "intent",
+        station: contract === "discovery" ? "plan" : contract === "proposal" ? "unit-tests" : "intent",
         role: contract === "review" ? "review" : "author",
-        ...(contract === "discovery" ? { kind: "discovery" as const } : {}),
+        ...(contract === "discovery" || contract === "proposal" ? { kind: contract } : {}),
         config, cwd, runDir, timeoutMs, signal,
         prompt: `This is a model availability check. Do not use tools or read files. Return only the JSON object ${JSON.stringify(expected)}.`,
       },

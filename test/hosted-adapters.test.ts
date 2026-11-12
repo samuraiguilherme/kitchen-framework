@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   chmodSync,
   existsSync,
@@ -9,6 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { hostedProvider, probeProvider } from "../src/providers.ts";
+import type { ProviderMetrics } from "../src/types.ts";
 
 function executable(probe = false, behavior = "", response?: unknown) {
   const root = mkdtempSync(path.join(tmpdir(), "kitchen fake provider "));
@@ -43,6 +44,22 @@ function executable(probe = false, behavior = "", response?: unknown) {
   return { root, file };
 }
 describe("hosted CLI adapters with fake executables", () => {
+  it.runIf(process.platform === "win32")("starts the nested Codex CLI with the standalone read-only sandbox", async () => {
+    vi.stubEnv("CODEX_WINDOWS_REGISTERED_CORE", "1");
+    try {
+      const { root, file } = executable(false, "if ('CODEX_WINDOWS_REGISTERED_CORE' in process.env) process.exit(12);");
+      await hostedProvider({ station: "implementation", role: "author", prompt: "Propose a change", cwd: root,
+        runDir: path.join(root, "run"), timeoutMs: 10000,
+        config: { provider: "codex", executable: file, windowsSandbox: "unelevated" } });
+      const { args } = JSON.parse(readFileSync(path.join(root, "invocation.json"), "utf8"));
+      expect(args.slice(args.indexOf("--sandbox"), args.indexOf("--sandbox") + 2)).toEqual(["--sandbox", "read-only"]);
+      expect(args).toContain('windows.sandbox="unelevated"');
+      expect(args).not.toContain("shell_tool");
+      expect(process.env.CODEX_WINDOWS_REGISTERED_CORE).toBe("1");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
   it.each(["codex", "claude"] as const)("uses the intent schema and disables %s exploration tools", async (provider) => {
     const response = {
       summary: "Intent", questions: [], document: "# Intent\nCustomers need an answer.",
@@ -154,6 +171,52 @@ describe("hosted CLI adapters with fake executables", () => {
     const response = { summary: "Source", evidence: [{ path: "src/a.ts", line: 2, hash: "" }], unresolved: [] };
     const { root, file } = executable(false, "", response);
     expect(await hostedProvider({ station: "plan", role: "author", kind: "discovery", prompt: "Discover", cwd: root, runDir: path.join(root, "run"), timeoutMs: 10000, config: { provider: "claude", executable: file } })).toEqual(response);
+  });
+
+  it("retains reported spend and usage when a paid response fails validation", async () => {
+    const { root, file } = executable(false, `console.log(JSON.stringify({
+      structured_output: { unexpected: true }, is_error: false, total_cost_usd: 0.01,
+      usage: { input_tokens: 12, output_tokens: 4 }
+    })); process.exit(0);`);
+    const attempts: ProviderMetrics[] = [];
+    await expect(hostedProvider({ station: "plan", role: "author", prompt: "Plan", cwd: root,
+      runDir: path.join(root, "run"), timeoutMs: 10000, config: { provider: "claude", executable: file },
+      onMetrics: value => attempts.push(value),
+    })).rejects.toThrow("Invalid plan author output");
+    expect(attempts).toEqual([expect.objectContaining({ reportedCostUsd: 0.01, usage: { input_tokens: 12, output_tokens: 4 } })]);
+  });
+
+  it.each(["codex", "claude"] as const)("uses the analysis-only contract for %s specialists", async (provider) => {
+    const { root, file } = executable();
+    const runDir = path.join(root, "specialist");
+    expect(await hostedProvider({ station: "verify", role: "author", kind: "specialist", prompt: "Inspect behavior", cwd: root, runDir, timeoutMs: 10000, config: { provider, executable: file } })).toEqual({
+      summary: "Inspect behavior", evidence: [], unresolved: [],
+    });
+    const schema = JSON.parse(readFileSync(path.join(runDir, "author-schema.json"), "utf8"));
+    expect(schema.required).toEqual(["summary", "evidence", "unresolved"]);
+  });
+
+  it.each(["codex", "claude"] as const)("uses the narrow file proposal contract for %s workers", async (provider) => {
+    const response = { summary: "Draft test", questions: [], files: [{ path: "answer.test.ts", content: "test", action: "write", kind: "test" }] };
+    const { root, file } = executable(false, "", response);
+    const runDir = path.join(root, "proposal");
+    expect(await hostedProvider({ station: "unit-tests", role: "author", kind: "proposal", prompt: "Draft tests", cwd: root, runDir, timeoutMs: 10000, config: { provider, executable: file } })).toEqual(response);
+    expect(JSON.parse(readFileSync(path.join(runDir, "author-schema.json"), "utf8")).required).toEqual(["summary", "questions", "files"]);
+  });
+
+  it.each(["codex", "claude"] as const)("disables exploration in an explicitly supplied-context %s request", async (provider) => {
+    const { root, file } = executable();
+    await hostedProvider({ station: "plan", kind: "discovery", role: "author", noTools: true,
+      prompt: "Use the supplied fixture text.", cwd: root, runDir: path.join(root, "run"), timeoutMs: 10000,
+      config: { provider, executable: file },
+      ...(provider === "codex" ? { codexReasoningEffort: "low" as const } : {}),
+    });
+    const invocation = JSON.parse(readFileSync(path.join(root, "invocation.json"), "utf8"));
+    if (provider === "claude") expect(invocation.args[invocation.args.indexOf("--tools") + 1]).toBe("");
+    else {
+      expect(invocation.args.join(" ")).toContain("--disable shell_tool");
+      expect(invocation.args.join(" ")).toMatch(/model_reasoning_effort=.*low/);
+    }
   });
 
   it.each(["review-shaped", "invalid-json", "permission", "error", "timeout", "cancelled"])("retains evidence for Claude author %s failures", async (failure) => {

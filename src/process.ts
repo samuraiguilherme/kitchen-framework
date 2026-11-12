@@ -7,7 +7,7 @@ export interface ProcessOptions {
   timeoutMs: number;
   input?: string;
   signal?: AbortSignal;
-  env?: Record<string, string>;
+  env?: NodeJS.ProcessEnv;
   onOutput?: (stream: "stdout" | "stderr", chunk: string) => string | void;
 }
 export interface ProcessResult {

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import type { Config, Profile, RoleConfig } from "./types.ts";
-import { stationOrder } from "./domain.ts";
+import type { Config, Profile, ProposalGroups, RoleConfig, Station } from "./types.ts";
+import { isProposalStation, isSpecialistStation, stationOrder, validateFeature } from "./domain.ts";
 import { validateDeepSeekConfig } from "./deepseek.ts";
 
 function mergeRole(
@@ -20,6 +20,14 @@ function mergeRole(
       ? { dsh: { ...base.dsh, ...override.dsh } }
       : {}),
   };
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+export function proposalGroupsFor(config: Config, station: Station, feature: string): ProposalGroups | undefined {
+  const groups = config.stations[station]?.proposalGroups;
+  return groups && Object.hasOwn(groups, feature) ? groups[feature] || undefined : undefined;
 }
 
 export function baseBranch(base: string): string {
@@ -103,6 +111,8 @@ export function loadConfig(
     if (!overrides) continue;
     const original = shared.stations?.[station];
     const pair = { ...original, ...overrides };
+    if (isRecord(original?.proposalGroups) && isRecord(overrides.proposalGroups))
+      pair.proposalGroups = { ...original.proposalGroups, ...overrides.proposalGroups };
     for (const role of ["author", "review"] as const) {
       if (overrides[role])
         pair[role] = mergeRole(
@@ -149,6 +159,28 @@ export function loadConfig(
       typeof pair.reviewEnabled !== "boolean"
     )
       throw new Error(`Station ${station} reviewEnabled must be a boolean.`);
+    if (pair?.specialistsEnabled !== undefined) {
+      if (!isSpecialistStation(station))
+        throw new Error("Specialist analysis is supported only for spec, test-plan, and verify.");
+      if (typeof pair.specialistsEnabled !== "boolean")
+        throw new Error(`Station ${station} specialistsEnabled must be a boolean.`);
+    }
+    if (pair?.proposalGroups !== undefined) {
+      if (!isProposalStation(station))
+        throw new Error("Proposal groups are supported only for unit-tests and implementation.");
+      if (!isRecord(pair.proposalGroups))
+        throw new Error(`Station ${station} proposalGroups must map feature names to two file groups or false.`);
+      for (const [feature, groups] of Object.entries(pair.proposalGroups)) {
+        validateFeature(feature);
+        if (groups === false) continue;
+        if (!Array.isArray(groups) || groups.length !== 2 || groups.some(group =>
+          !Array.isArray(group) || !group.length || group.some(file => typeof file !== "string" || !file.trim()),
+        )) throw new Error(`Station ${station} requires two nonempty proposal groups for ${feature}.`);
+        const files = groups.flat();
+        if (new Set(files).size !== files.length)
+          throw new Error(`Station ${station} proposal groups for ${feature} must own disjoint files.`);
+      }
+    }
     if (pair?.author) role(pair.author);
     if (pair?.review) role(pair.review);
   }

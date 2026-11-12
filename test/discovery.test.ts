@@ -9,7 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { discover } from "../src/discovery.ts";
+import { discover, preparePlanContext } from "../src/discovery.ts";
 import { hash } from "../src/domain.ts";
 import { loadConfig } from "../src/config.ts";
 import type {
@@ -348,5 +348,27 @@ describe("read-only repository discovery", () => {
       /Implementation discovery failed/,
     );
     expect(siblingAborted).toBe(true);
+  });
+
+  it("cancels and settles both discovery workers if context building fails", async () => {
+    const setup = fixture();
+    let finished = 0;
+    const options = setup.options(async (request) => {
+      const signal = request.signal!;
+      if (!signal.aborted)
+        await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      finished++;
+      throw new Error("Worker cancelled.");
+    });
+    await expect(preparePlanContext({
+      ...options,
+      before: { fingerprint: "source", codeFingerprint: options.codeFingerprint, fileCount: 0, byteCount: 0 },
+    }, async () => {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      throw new Error("Context failed.");
+    })).rejects.toThrow("Context failed.");
+    expect(finished).toBe(2);
+    expect(existsSync(path.join(setup.root, ".kitchen/features/sort-items/discovery"))).toBe(false);
   });
 });

@@ -1,8 +1,9 @@
 # Plan: optimize execution within each Kitchen station
 
-Prepared 2026-11-05 against commit `f2b67b774eeedfff08e5f65551a62df972e2f423`.
-Status: source analysis and offline scheduling experiments completed; production
-changes proposed below are not implemented. The accompanying benchmark is new.
+Prepared 2026-11-05 against `f2b67b7`; re-audited and benchmarked 2026-11-12
+against `4c8b671`. Status: proposal. No runner behavior was changed in the
+re-audit. The eight stations are defined in [station order](../../src/domain.ts:6)
+and enforced by [upstream approval checks](../../src/kitchen.ts:323).
 
 ## Recommended direction
 
@@ -11,17 +12,54 @@ with a bounded task graph, source-bound context reuse, and runner-managed child
 agents that return structured results to one parent. Start with improvements to
 existing discovery and check scheduling before adding parallel code authors.
 
-The first implementation should overlap context construction with plan discovery,
-reuse a verified repository inventory within one read phase, and improve timing
-attribution. Then introduce opt-in specialist investigations for spec, test-plan
-and verify. Parallel file proposals belong in a later phase with explicit file
-ownership and a deterministic parent join.
+First, attribute elapsed time to the actual critical path, overlap context with
+already-enabled plan discovery, and make the existing two check slots safe and
+useful for more eligible profiles. Reuse a verified repository inventory within
+one read phase. Use measured station times to decide whether to pilot specialist
+investigations. Parallel file proposals belong in a later phase with explicit
+file ownership and a deterministic parent join.
 
 This plan preserves before/after mutation detection, detached baseline RED,
 accepted test integrity, evidence-aware final review, and exact publication
 approval. There are no measured production-model speedup or quality claims.
 
-## Tests executed before selecting this plan
+## Current evidence (2026-11-12)
+
+The [offline benchmark](../../scripts/benchmark-stations.ts) passed its
+assertions on seven paired iterations against the clean `4c8b671` checkout.
+It uses simulated provider delays and real Node check subprocesses, with no
+model calls, installs, or publication. Raw data is in the ignored local report
+`.kitchen/benchmarks/station-optimization-9bb4474c-4387-4660-bdb9-ee471184710f/report.json`.
+
+| Measured operation | Before → after (median) | What it supports |
+| --- | --- | --- |
+| Discovery pair, serial → concurrent | 218 → 131 ms (40% less) | Existing hosted scheduling policy; verified warm hits took 16 ms and made no provider calls. |
+| Four command checks, serial → independent profiles | 1,046 → 556 ms (47% less) | Existing two-slot runner; a shared resource took 1,079 ms and an exclusive barrier took 807 ms. |
+| Plan context plus discovery, serial → prototype overlap | 359 → 225 ms (37% less) | Overlapping the two branches on a shared source identity; excludes author time and does not measure a whole station. |
+| Evidence bundle, cold → verified hit | 91 → 91 ms | Cache lookup occurs after the bundle has been rebuilt. |
+| Full snapshot of this checkout | 145 ms (139 files, 1,051,235 bytes) | Inventory reuse can help short runs; continue to scan across mutation boundaries. |
+
+The earlier local timing capture contains 35 measured runs across intent,
+spec, plan, and test-plan, including failures. Provider elapsed intervals account
+for 99.76% of recorded active time in aggregate (99.61–99.89% by station).
+This is one historical workload, not a current Kindi measurement or evidence
+for the other four stations. It makes provider completion, retries, and prompt
+work the first things to measure for local authoring; file scans alone will not
+materially reduce minutes of generation.
+
+All 15 discovery tests and all 3 evidence-bundle tests passed. The four
+check-runner cases runnable in the sandbox passed. A fifth requires creating a
+Windows junction, and nine Kindi tests need loopback connections that the sandbox
+denied; the two non-loopback Kindi cases passed. The historical punctuation
+regression described below is fixed in this checkout.
+
+One evidence defect was reproduced using actual check commands: after
+`suite-smoke`, check `smoke` also claimed `check-suite-smoke.json` and
+`raw-suite-smoke.json`. [The suffix match](../../src/checks.ts:369) allows
+evidence ownership to depend on completion order under concurrency. Use exact
+artifact paths or a directory per check before widening profile opt-in.
+
+## Historical experiments (2026-11-05)
 
 The new [offline benchmark](../../scripts/benchmark-stations.ts) calls production
 `discover`, `executeChecks`, `buildContext`, `evidenceBundle`, and `sourceSnapshot`.
@@ -107,9 +145,11 @@ execution station follows this sequence:
    Approval is a separate locked operation that revalidates the fingerprint.
 
 Publish has its own path: candidate/base/scope/test-integrity checks → exact
-preview → optional review → human approval → identity and remote-base checks →
-commit → final fingerprint check → push → find/create the recoverable draft PR.
-Its author is not called. Publication side effects remain ordered.
+preview → optional review → human approval. The publish command then rechecks
+the candidate, origin and remote base, verifies the active account, looks up any
+existing PR, commits, rechecks the approval fingerprint, pushes, and reuses or
+creates a draft PR. Its author is not called. Publication side effects remain
+ordered.
 
 | Mechanism | Existing behavior and consequence |
 | --- | --- |
@@ -117,10 +157,10 @@ Its author is not called. Publication side effects remain ordered.
 | Approval refresh | [refresh](../../src/kitchen.ts:255) walks at most eight station records in order and shares a source fingerprint for applicable approved execution stations. Staleness propagates downstream. Parallel refresh of dependent records is inappropriate. |
 | Context | [buildContext](../../src/context.ts:33) reads authoritative documents and instructions, builds a bounded evidence bundle, then obtains diff and untracked paths for applicable stations. The full diff is not bounded by the 24 KiB evidence-bundle limit. |
 | Discovery | [discover](../../src/discovery.ts:65) already fans out implementation and verification investigations, validates/hashes citations, joins in declared order and persists a verified cache. Hosted providers use two concurrent requests; DeepSeek uses one at a time. It is opt-in and invoked before the plan author. |
-| Check setup | [executeChecks](../../src/checks.ts:592) deduplicates setup identities and completes dependency writes before launching checks. [executeSetup](../../src/setup-runner.ts:181) also locks installs per worktree and validates its cache. |
-| Check scheduling | Two slots, explicit `parallelSafe`, canonical cwd/resource groups, shared-fixture exclusion, and exclusive browser/manual/unopted checks. Pending scans can approach quadratic work in check count; this is a secondary concern for small manifests. |
-| Check evidence | Each completion scans the run directory for its evidence files. With many checks, repeated directory scans and hashing add avoidable work. Child-specific directories or an explicit artifact list could bound this cost. |
-| Provider capabilities | [providerInvocation](../../src/providers.ts:209) disables native Codex `multi_agent`; Claude exposes Read/Glob/Grep. DeepSeek's tool guard permits reads. Kitchen, rather than the provider, owns writes and execution. |
+| Check setup | [executeChecks](../../src/checks.ts:647) deduplicates setup identities and completes dependency writes before launching checks. [executeSetup](../../src/setup-runner.ts:181) also locks installs per worktree and validates its cache. |
+| Check scheduling | Two slots and explicit `parallelSafe`. A shared resolved cwd, fixture path, or `resourceGroup` serializes the affected checks. Browser, manual, and unopted checks are exclusive barriers. |
+| Check evidence | Each completion scans the shared run directory by suffix. Record exact artifacts to remove the suffix collision and avoid repeated directory walks. |
+| Provider capabilities | [providerInvocation](../../src/providers.ts:209) disables native Codex `multi_agent`; Claude exposes Read/Glob/Grep. DeepSeek's tool guard permits reads. Its discovery policy serializes both Ollama and Kindi, whose health endpoint reports model name and allocated context without a model digest. Kitchen owns writes and execution. |
 | Timing | Execution stations record phase, provider, prompt, human-wait and snapshot data. [readTimings](../../src/timings.ts:41) distinguishes summed provider work from interval-union elapsed time. Publish lacks the equivalent complete run-metrics wrapper; provider/check queue time and child identity are not explicit. |
 
 The largest theoretical gains come from replacing sums of independent durations
@@ -133,15 +173,23 @@ model's queue. No experiment here establishes that more than two workers helps.
 
 | Station | Present critical path | Proposed optimization | Parent join and limits |
 | --- | --- | --- | --- |
-| Foundation / doctor / start | Doctor already overlaps inventory and CLI diagnostics but runs structured model probes serially. Start creates an isolated worktree and state. | Bound diagnostic fan-out; group probe jobs by executable, provider endpoint and model resource. Overlap independent hosted probes after prerequisites. Reuse one immutable config/instruction inventory per operation. | Keep local model probes serial by default, preserve separate response-contract checks and cancellation, and serialize shared Git metadata mutations. Benchmark doctor separately before changing it. |
-| intent | Minimal instructions/template → author/questions → lint → optional review. It already avoids broad implementation context. | Keep a single author by default. Batch related questions and reuse verified continuation where the existing session policy permits. Generate a concise review view from the candidate and questions. | Never infer human answers. Parallel agents add requests and synthesis overhead to a small station; enable only for unusually large, clearly partitioned stakeholder analysis. |
-| spec | Accepted intent and evidence → author → AC/heading validation → optional review. | For complex requests, run business-rule/permission analysis and failure/example analysis on the same accepted intent in parallel; parent synthesizes one spec. | Parent owns stable AC IDs, reconciles contradictions and surfaces product questions. Investigators cannot silently choose unresolved product behavior. Single-author default remains. |
-| plan | Context → optional two-agent discovery → author → exact scope manifest → optional review. | First overlap context construction and the existing discovery pair. Start both after one source snapshot; join before the author. Reuse verified discovery on unchanged inputs. | Require both results, citation validation, the post-discovery full-source guard and exact accepted scope. Prototype passed; production cancellation/metrics integration still needs tests. |
-| test-plan | Accepted spec/plan → author → normalized IDs, scope and coverage validation → optional review. | Parallel investigators map disjoint AC groups or packages to tests and inspect runtime/profile prerequisites. Parent composes one coverage matrix and manifest. | Detect missing/duplicate AC mappings, normalized check-ID collisions and incompatible profiles. Shared test-file ownership prevents independent writers from producing conflicting content. |
-| unit-tests | Setup preflight → author proposals → detached pinned baseline → setup/checks → optional review → tests-first approval commit. | Draft disjoint approved test files as parallel proposals after runtime preflight. Use existing independent check slots on the single prepared baseline. Deduplicate setup and candidate/baseline inventory reads within safe phases. | Freeze interface assumptions first. Parent validates every proposal before any write; retain throw-only scaffolds, pinned production baseline, per-AC assertion RED and preservation GREEN. Shared-file tests stay together. |
-| implementation | Author → scoped writes → GREEN checks → optional review. | Partition the accepted file/dependency graph into independent components. Children propose complete changes for assigned files; parent joins and applies once. Begin with at most two hosted workers. | Shared interfaces and dependency order form explicit barriers. Reject overlapping paths, test rewrites and scope expansion. Run integrated GREEN after the join; isolated child success cannot replace it. |
-| verify | Read-only author assessment → fresh required checks → verification report → optional review → reviewed report. | Use behavior/flow, architecture and test-integrity investigators. After a question-free parent assessment, overlap preliminary specialist analysis with eligible checks against a frozen candidate. | No checks start while author questions remain unresolved. A final evidence-aware synthesis/review waits for complete checks and the rendered report. Child opinions and cached GREEN are not final execution evidence. |
-| publish | Candidate validation → exact preview/review → human approval → remote preflight → commit/push/PR. | Parallelize independent read-only local preflight queries and preview-analysis tasks; add full metrics and reuse an immutable preview representation. | Revalidate state after the read join. Keep exact-preview approval, identity, remote-base check, final source check, commit/push and PR recovery ordered. Keep independent review opt-in. |
+| intent | Minimal instructions/template → author/questions → lint → optional review. | One author. Ask related questions in one round; reuse verified continuation where qualified. Keep the prompt small and measure retries before adding work. | Never infer human answers or begin the next station. Kindi continuation should stay off until identity can be qualified. |
+| spec | Accepted intent and evidence → author → acceptance criteria and heading validation → optional review. | On complex hosted runs, split business rules/permissions from failure cases/examples; the parent synthesizes one spec. Keep a single author for small or local runs. | Parent owns criterion IDs, reconciles contradictions and surfaces unresolved decisions. |
+| plan | Context → optional discovery pair → author → exact scope manifest → optional review. | First overlap context construction with the existing discovery pair after one source snapshot. Reuse verified discovery on unchanged inputs. This adds zero model calls when discovery is enabled. | Join both branches before the author, verify citations, then repeat the full source guard. Publish the discovery cache only after a verified join. |
+| test-plan | Accepted spec/plan and profile readiness → author → normalized IDs, scope and coverage validation → optional review. | On larger plans, map independent groups of criteria or packages while checking fixture/profile readiness; the parent composes one coverage matrix and manifest. Group checks by real resource dependencies. | Detect uncovered criteria, duplicate normalized check IDs and incompatible profiles. Give each shared test file one owner. |
+| unit-tests | Setup preflight → author proposals → detached pinned baseline → setup/checks → optional review → tests-first approval commit. | Use both existing check slots for genuinely independent profiles on one baseline. Overlap candidate and baseline Git inventory reads. Later, draft disjoint approved test files as proposals after runtime preflight. | Freeze shared interfaces first; validate the full join before writing. Retain throw-only scaffolds, pinned production baseline, per-criterion assertion RED and preservation GREEN. |
+| implementation | Author → scoped writes → GREEN checks → optional review. | Use both slots for independent GREEN checks between exclusive barriers. On a larger feature, partition the accepted file dependency graph; two hosted workers can propose disjoint file sets before one parent applies the join. | Finalize shared interfaces first. Reject path conflicts, accepted test rewrites and scope expansion. Run integrated GREEN on the joined candidate. |
+| verify | Read-only author assessment → fresh required checks → verification report → optional review → reviewed report. | After a question-free assessment, overlap preliminary static audits with eligible checks against a frozen candidate. Use existing slots and reserve specialist model calls for runs that justify them. | Any checks that can mutate what the audit reads must be isolated or run separately. Render the report after checks; final review sees that complete evidence. |
+| publish | Candidate validation → exact preview/review → human approval → remote preflight → commit/push/PR. | Share one validated candidate read view for preview inputs. Batch independent branch/base/ancestry and diff/untracked queries, and add preview and publish timings. | Revalidate candidate and Git identity at the join. Preserve exact preview approval, remote checks, commit, final fingerprint, push and PR recovery order. |
+
+Outside the eight stations, `start` can overlap the base lookup and ignore check
+before creating the worktree; Git mutations and state creation stay ordered.
+`doctor` already overlaps inventory and CLI diagnostics but can later run
+independent hosted contract probes with a bound after their prerequisites.
+`prepare` is an operator-owned step before unit-tests; dependency writes stay
+behind the worktree's install lock and finish before checks or authoring. Only
+consider warming a detached baseline during authoring once its inputs are fixed
+and the setup is qualified for that isolated worktree.
 
 ## Parent and subagent orchestration
 
@@ -179,11 +227,12 @@ flowchart TD
    call `Kitchen.run`, acquire the parent feature lock, save `FeatureState`, run
    checks, approve, commit or publish. Calling `Kitchen.run` recursively would
    conflict with the existing lock. Only the parent commits the joined outcome.
-3. **Bounded resources.** Start with two hosted tasks and one task per local
-   endpoint/model resource. Add a global cap across features as well as a
-   per-station cap. Model queue, memory pressure, CPU, fixture and install
-   resources matter more than provider names alone. Depth one by default;
-   workers cannot recursively fan out. New settings must be validated and
+3. **Bounded resources.** Start with two hosted tasks per station and one task
+   per local backend or shared accelerator. Use an aggregate cap across feature
+   processes; a per-feature lock or an in-process semaphore cannot enforce it.
+   Track CPU, memory, fixture, port, output directory, and install resources
+   separately. Different endpoints or working directories can still share a
+   bottleneck. Keep one delegation level. New settings must be validated and
    fingerprinted before use; these are proposed options, not existing CLI flags.
 4. **Deterministic join.** Persist results per task and attempt, then consume them
    in declared task order, independent of completion order. Validate response
@@ -198,13 +247,14 @@ flowchart TD
    scratch validation if stronger all-or-nothing filesystem writes are needed;
    current validation-before-write does not make I/O failures transactional.
 6. **Failure and recovery.** Give each child a distinct evidence directory and
-   shared parent cancellation. Abort siblings on required-task failure, settle
-   all in-flight requests, retain partial evidence, and never cache incomplete
-   joins. Retry only a failed child against unchanged full task inputs, within
-   the parent deadline and attempt budget. Optional analysis may fall back to
-   the existing single-author path with a visible record; required review or
-   checks cannot be silently skipped. Verify provider children actually stopped
-   before recovery writes.
+   shared parent cancellation. Abort siblings on required-task failure and wait
+   for all to settle before releasing the feature lock. Retain partial evidence
+   and publish a cache entry only after the parent verifies the source guard.
+   Retry only a failed child against unchanged full task inputs, within the
+   parent deadline and attempt budget. Optional analysis may fall back to the
+   existing single-author path with a visible record; required review or checks
+   cannot be silently skipped. Verify provider children actually stopped before
+   recovery writes.
 7. **Reporting to the parent.** Return compact typed results through promises,
    persist full raw evidence, and pass summaries plus evidence references to
    synthesis. Extend `ProviderRequest`, `ProviderMetrics` and run metrics with
@@ -234,8 +284,10 @@ which already avoids provider requests on verified hits.
 Precompute immutable check resource keys once per execution batch and record
 artifact paths directly. This reduces repeated path canonicalization and
 directory scans while preserving cwd aliases, case rules, fixture exclusion,
-setup-before-readers and exclusive barriers. Do not relax browser or manual
-exclusivity as part of the initial optimization.
+setup-before-readers and exclusive barriers. Declare independence only when
+profiles have separate mutable outputs, fixture state and ports; when they
+already parallelize internally, measure CPU and memory contention before
+adding an outer slot. Keep browser and manual checks exclusive initially.
 
 Later experiments may use AC-scoped context slices and one immutable browser
 build per source/profile/build identity. Always preserve complete relevant
@@ -253,18 +305,19 @@ the default continues to execute required verification checks.
 
 | Step | Concrete change and likely files | Exit gate |
 | --- | --- | --- |
-| 0. Establish a trustworthy baseline | Correct sentence-ending path extraction in `src/evidence-bundle.ts`; expand punctuation/path tests. Preserve the existing Windows regression evidence. | Evidence-bundle regression passes; no legitimate dotted filenames, references or exclusions regress. Obtain a complete runnable regression result before rollout. |
-| 1. Instrument the critical path | Extend `src/types.ts`, `src/metrics.ts`, `src/timings.ts`, `src/kitchen.ts` and `src/provider-progress.ts` for child identities, queue/join spans, source-scan counts, cache work and publish timings. | Failures, retries, human wait and cancelled/partial tasks remain visible; elapsed intervals are unioned and work is summed without double-counting nested phases. |
-| 2. Optimize existing read and check paths | Overlap context/discovery in `src/kitchen.ts`; add a read-phase view across `src/git.ts`, `src/context.ts`, `src/evidence-bundle.ts` and `src/prompts.ts`; precompute resources in `src/checks.ts`. | Context/output equivalence, post-external-call guards, cancellation and cache invalidation pass. Reproduce the benchmark gains without changing approvals or check outcomes. |
-| 3. Add bounded analysis tasks | Extract reusable task scheduling from `src/discovery.ts` into a small runner module, add task contracts in `src/types.ts`/`src/providers.ts`, validate opt-in settings in `src/config.ts`, and integrate spec/test-plan/verify. | Single-author default works unchanged. Required failure/cancellation never approves. Known review blockers are detected and unresolved decisions reach the parent. |
-| 4. Pilot parallel proposals | Add dependency-aware partitioning and parent proposal joins for unit-tests, then implementation; update prompts and fixtures. | Duplicate/conflicting path, stale input, scope, scaffold and test-rewrite attacks fail before writes. Detached RED and integrated GREEN remain authoritative. |
-| 5. Qualify and roll out | Extend the benchmark matrix and station reports; document resource limits and rollback in README/config examples. | Paired live runs meet the quality/cost gates below, first at concurrency two; local concurrency remains one until independently qualified. |
+| 0. Isolate check evidence | Replace suffix discovery in `src/checks.ts` with exact artifact ownership. Retain the evidence-bundle regressions, which now pass. | Suffix-related IDs cannot claim each other's artifacts in either completion order. Existing manifests, report hashes and approval checks still work. |
+| 1. Instrument the critical path | Extend `src/types.ts`, `src/metrics.ts`, `src/timings.ts`, `src/kitchen.ts` and `src/provider-progress.ts` for child identities, phase spans, queue/join time, source-scan counts, cache work and publish timings. | Failures, retries, human wait and cancelled/partial tasks remain visible; elapsed intervals are unioned and work is summed without double-counting nested phases. |
+| 2. Optimize existing read and check paths | Overlap context/discovery with cancellation and an outer guard in `src/kitchen.ts`; add a read-phase view across `src/git.ts`, `src/context.ts`, `src/evidence-bundle.ts` and `src/prompts.ts`; precompute check resources and opt in known independent profiles. | Context/output equivalence, post-external-call guards, cancellation and cache invalidation pass. Reproduce gains without changing approvals or check outcomes. |
+| 3. Add bounded analysis tasks | `stations.<station>.specialistsEnabled` enables two read-only tasks for spec, test-plan, or verify. Discovery and specialists share `src/analysis.ts`. The runner validates and joins specialist results before the station author. | The author resolves material questions through the existing dialogue. Verify reruns checks before independent review. Hosted tasks use two slots per run and DeepSeek tasks run serially. |
+| 4. Pilot parallel proposals | `stations.<station>.proposalGroups` lets an operator assign two independent file groups per feature. The runner joins the structured worker responses in configured order before applying one candidate. | Overlap, stale source, and protected-path violations fail before candidate writes. Detached RED and integrated GREEN remain authoritative. |
+| 5. Qualify and roll out | Run the [paired station matrix](station-qualification.md) against the single-author baseline and retain its live reports. | Apply the quality, latency, cost, and rollback gates in the qualification guide per mode. |
 
 Use an opt-in setting for new task modes and retain the single-author fallback.
-Fingerprint task topology, schemas, prompts, effective providers, budgets and
-cache policy so changing the orchestration invalidates old candidates as
-appropriate. Existing on-disk state needs a compatible reader or an explicit
-version migration; do not require a workflow engine, queue service or daemon.
+Bind retries and task caches to topology, schemas, prompts, effective providers
+and budgets. Keep approval compatibility for execution-only changes, as
+[approval fingerprinting](../../src/approval-fingerprint.ts:12) does today;
+change approval identity when the acceptance policy, artifacts or evidence
+change. Start with the existing runner and state format.
 
 ## Qualification matrix
 
@@ -272,9 +325,13 @@ Run correctness first, then compare elapsed time and total work for the same
 requests, commits, provider/model settings, review policy and check manifests.
 Include simple requests where delegation should stay off, a multi-package
 feature with disjoint files, a shared-interface feature, and a failure-heavy
-feature with operator questions and retries. Local-model qualification is a
-separate experiment; existing model completion/idle-timeout problems must be
-resolved before inferring any benefit from local concurrency.
+feature with operator questions and retries. Compare the full single-author
+critical path with the slowest child plus queue and parent synthesis, including
+any extra retries. Local-model qualification is a separate experiment: measure
+Ollama and Kindi independently, keep one generation at a time, and establish
+time to valid output before increasing concurrency. Kindi's health metadata
+does not identify the underlying model artifact; do not expand session or
+result reuse based on its model name alone.
 
 - Unit and integration tests: task dependency/order, bounded and global limits,
   shared resources, install barriers, deterministic joins and collision handling.
@@ -299,7 +356,7 @@ resolved before inferring any benefit from local concurrency.
 Reproduce the offline experiments with:
 
 ```powershell
-pnpm exec tsx scripts/benchmark-stations.ts --iterations 5
+pnpm exec tsx scripts/benchmark-stations.ts --iterations 7
 pnpm check:types
 pnpm lint
 pnpm exec vitest run test/discovery.test.ts test/check-runner.test.ts test/hosted-adapters.test.ts test/evidence-bundle.test.ts

@@ -14,5 +14,5 @@
     "noUnusedParameters": true,
     "skipLibCheck": true
   },
-  "include": ["src", "test", "vitest.config.ts", "scripts/test.ts", "scripts/replay-station.ts", "scripts/lib"]
+  "include": ["src", "test", "vitest.config.ts", "scripts/test.ts", "scripts/replay-station.ts", "scripts/qualify-stations.ts", "scripts/review-station-qualification.ts", "scripts/lib"]
 }

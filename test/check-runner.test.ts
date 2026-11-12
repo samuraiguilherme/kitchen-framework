@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { executeChecks } from "../src/checks.ts";
+import { hash } from "../src/domain.ts";
 import { runProcess } from "../src/process.ts";
 import type { CheckDefinition, Profile } from "../src/types.ts";
 
@@ -35,6 +36,10 @@ const profile = (id: string, extra: Partial<Profile> = {}): Profile => ({
   resourceGroup: id,
   ...extra,
 });
+const packageProfile = (root: string, id: string, extra: Partial<Profile> = {}) => {
+  mkdirSync(path.join(root, id));
+  return profile(id, { cwd: id, ...extra });
+};
 const fixture = () => {
   const root = mkdtempSync(path.join(tmpdir(), "kitchen-check-runner-"));
   return {
@@ -49,7 +54,7 @@ beforeEach(() => {
 });
 
 describe("bounded check scheduling", () => {
-  it("treats cwd aliases of one directory as the same default resource", async () => {
+  it("serializes cwd aliases even when explicit groups differ", async () => {
     const input = fixture();
     const shared = path.join(input.root, "shared");
     mkdirSync(shared);
@@ -71,11 +76,9 @@ describe("bounded check scheduling", () => {
       profiles: {
         one: profile("one", {
           cwd: "alias-one/project",
-          resourceGroup: undefined,
         }),
         two: profile("two", {
           cwd: "alias-two/project",
-          resourceGroup: undefined,
         }),
       },
     });
@@ -133,7 +136,7 @@ describe("bounded check scheduling", () => {
     const profiles = Object.fromEntries(
       ids.map((id) => [
         id,
-        profile(id, id === "exclusive" ? { parallelSafe: false } : {}),
+        packageProfile(input.root, id, id === "exclusive" ? { parallelSafe: false } : {}),
       ]),
     );
     const results = await executeChecks({
@@ -160,6 +163,12 @@ describe("bounded check scheduling", () => {
       { resourceGroup: "shared" },
       { resourceGroup: undefined },
     ]) {
+      const input = fixture();
+      const ids = ["one", "two"];
+      const profiles = Object.fromEntries(ids.map((id) => [id, extra.resourceGroup
+        ? packageProfile(input.root, id, extra)
+        : profile(id, extra),
+      ]));
       let active = 0,
         maximum = 0;
       vi.mocked(runProcess).mockImplementation(async () => {
@@ -170,11 +179,37 @@ describe("bounded check scheduling", () => {
         return ok;
       });
       await executeChecks({
-        ...fixture(),
-        definitions: [definition("one"), definition("two")],
-        profiles: { one: profile("one", extra), two: profile("two", extra) },
+        ...input,
+        definitions: ids.map((id) => definition(id)),
+        profiles,
       });
       expect(maximum).toBe(1);
+    }
+  });
+
+  it.each(["smoke", "suite-smoke"])("keeps artifacts separate when %s finishes first", async (first) => {
+    const input = fixture();
+    const ids = ["suite-smoke", "smoke"];
+    const completed: string[] = [];
+    mkdirSync(input.runDir, { recursive: true });
+    writeFileSync(path.join(input.runDir, "setup-smoke.json"), "stale artifact");
+    vi.mocked(runProcess).mockImplementation(async ({ command }) => {
+      if (command !== first) await new Promise<void>((resolve) => setImmediate(resolve));
+      completed.push(command);
+      return ok;
+    });
+    const results = await executeChecks({
+      ...input,
+      definitions: ids.map((id) => definition(id)),
+      profiles: Object.fromEntries(ids.map((id) => [id, packageProfile(input.root, id)])),
+    });
+    expect(completed[0]).toBe(first);
+    expect(results.map(({ id }) => id)).toEqual(ids);
+    for (const result of results) {
+      const files = ["check", "raw"].map((kind) => path.join(input.runDir, `${kind}-${result.id}.json`));
+      expect(result.evidenceHashes).toEqual(Object.fromEntries(
+        files.map((file) => [file, hash(readFileSync(file))]),
+      ));
     }
   });
 

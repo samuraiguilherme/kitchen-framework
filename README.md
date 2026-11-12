@@ -391,11 +391,15 @@ serialized; shared setup finishes before checks start. A stale install lock fail
 with its exact path so an operator can inspect ownership before removing it.
 Failed infrastructure never counts as behavioral RED.
 
-Check profiles can opt into a maximum of two concurrent checks with
-`"parallelSafe": true`. An optional nonempty `resourceGroup` names a shared
-resource; by default checks sharing a cwd serialize. Browser, manual and
-unopted-in profiles always run alone. Results and evidence retain manifest order.
-Required checks still execute at both implementation and verification.
+`unit-tests`, `implementation`, and `verify` can run up to two checks at a time.
+The example Vitest profiles use `"parallelSafe": true`. For another package,
+use its own `cwd` and opt in when its commands have isolated outputs and
+fixtures. Checks sharing a resolved working directory, fixture path, or
+`resourceGroup` run serially with respect to each other. Use the same
+`resourceGroup` for checks that share resources such as a local database or
+output directory across packages. Browser, manual, and unopted-in profiles
+run alone. The runner records results and evidence in manifest order and runs
+the required checks again at verification.
 
 Optional `"discovery": { "enabled": true }` in Kitchen configuration runs two
 read-only agents at plan: implementation/conventions and tests/runtime readiness.
@@ -403,6 +407,73 @@ Their cited findings are source-verified, cached and reused downstream; one auth
 integrates them. They cannot write or replace independent review, executable
 checks or any of the eight human approvals. This consumes additional model calls
 and defaults to disabled until matched measurements establish a net improvement.
+
+Enable read-only specialist analysis per station in `kitchen.config.json` or
+`kitchen.config.local.json`:
+
+```json
+{
+  "stations": {
+    "spec": { "specialistsEnabled": true },
+    "test-plan": { "specialistsEnabled": true },
+    "verify": { "specialistsEnabled": true }
+  }
+}
+```
+
+Each enabled author pass makes two additional calls using that station's author
+provider. Codex and Claude use up to two workers per station run. DeepSeek runs
+one worker at a time and uses its discovery token budget. The author receives
+the ordered results after the runner verifies the citations and source snapshot.
+If either task fails, rerun the station after resolving the failure. An author
+pass after human answers collects fresh findings. Verification still runs its
+required checks before any independent review. Each station requires human
+approval, and changing its opt-in invalidates its existing approval and any
+dependent approvals.
+
+Pilot parallel file proposals by assigning two groups of files for a feature.
+Set `proposalGroups` under `unit-tests` and, when ready, `implementation` in
+`kitchen.config.local.json` or `kitchen.config.json`:
+
+```json
+{
+  "stations": {
+    "unit-tests": {
+      "proposalGroups": {
+        "completion-notifications": [["src/send.test.ts"], ["src/preferences.test.ts"]]
+      }
+    },
+    "implementation": {
+      "proposalGroups": {
+        "completion-notifications": [["src/send.ts"], ["src/preferences.ts"]]
+      }
+    }
+  }
+}
+```
+
+Each station requires two nonempty, disjoint groups. Assign every approved unit
+test and minimal scaffold for `unit-tests`. For `implementation`, assign every
+approved editable path, excluding accepted unit tests, feature documents, and
+operator-prepared runtime files. Use exact repository-relative paths. Keep files
+that must be designed together in the same group, including new interfaces and
+their dependent tests. Omit the feature entry or set it to `false` to use the
+single author. Changing the assignment requires renewed approval for that
+station and its dependents.
+
+Hosted workers draft concurrently and DeepSeek workers draft serially. The
+runner joins proposals in group and assigned-file order, then validates and
+applies one candidate. A question from either worker pauses the whole candidate
+until both workers can draft with the answers. Tests still run against the pinned
+baseline before the tests-first approval and against the joined implementation
+before implementation approval. Each run retains separate worker evidence.
+
+Use `pnpm benchmark:qualify` to list the paired station cases and their call
+count. `--offline` exercises the disposable fixtures with deterministic
+responses. `--live --config <pinned-role.json>` uses the named provider and
+model on both arms and records active time, fixture quality checks, token usage,
+and any provider-reported dollar cost. See the [qualification and rollback
+guide](docs/design/station-qualification.md) for the matrix and rollout gates.
 
 Reproduce the bounded hashing comparison without provider calls:
 

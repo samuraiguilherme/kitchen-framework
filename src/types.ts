@@ -7,6 +7,9 @@ export type Station =
   | "implementation"
   | "verify"
   | "publish";
+export type SpecialistStation = Extract<Station, "spec" | "test-plan" | "verify">;
+export type ProposalStation = Extract<Station, "unit-tests" | "implementation">;
+export type ProposalGroups = readonly [readonly string[], readonly string[]];
 export type ProviderName = "codex" | "claude" | "deepseek";
 export interface Finding {
   id: string;
@@ -55,6 +58,7 @@ export interface ProviderMetrics {
   actionableOutputMs?: number;
   toolCount: number;
   usage?: Record<string, number>;
+  reportedCostUsd?: number;
   tokens?: TokenMetrics;
 }
 export interface TokenStep {
@@ -130,6 +134,7 @@ export interface AuthorOutput {
   scaffoldFiles: string[];
   checks: CheckDefinition[];
 }
+export type FileProposal = Pick<AuthorOutput, "summary" | "questions" | "files">;
 export interface ReviewOutput {
   summary: string;
   findings: Finding[];
@@ -193,7 +198,13 @@ export interface Config {
   stations: Partial<
     Record<
       Station,
-      { author?: RoleConfig; review?: RoleConfig; reviewEnabled?: boolean }
+      {
+        author?: RoleConfig;
+        review?: RoleConfig;
+        reviewEnabled?: boolean;
+        specialistsEnabled?: boolean;
+        proposalGroups?: Record<string, ProposalGroups | false>;
+      }
     >
   >;
   profiles: Record<string, Profile>;
@@ -278,7 +289,9 @@ export interface ProviderRequest {
   timeoutMs: number;
   signal?: AbortSignal;
   onProgress?: (message: string) => void;
-  kind?: "discovery";
+  kind?: "discovery" | "specialist" | "proposal";
+  noTools?: boolean;
+  codexReasoningEffort?: "low" | "medium" | "high" | "xhigh";
   onMetrics?: (metrics: ProviderMetrics) => void;
   session?: { id?: string; home: string };
   onSession?: (id: string, home?: string) => void;

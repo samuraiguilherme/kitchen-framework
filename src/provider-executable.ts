@@ -2,6 +2,12 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import type { ProviderName } from "./types.ts";
 
+export function codexCliEnvironment(): NodeJS.ProcessEnv | undefined {
+  // A CLI subprocess has no registered desktop Core package identity. Select
+  // the standalone backend while retaining the configured sandbox policy.
+  return process.platform === "win32" ? { CODEX_WINDOWS_REGISTERED_CORE: undefined } : undefined;
+}
+
 export function resolveProviderExecutable(
   provider: ProviderName,
   executable?: string,

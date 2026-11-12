@@ -283,4 +283,22 @@ describe("machine-local Kitchen configuration", () => {
     expect(() => loadConfig(fixture({ providers: { author: { provider: "codex", sessionReuse: "after-input" } } }))).toThrow(/provider configuration/);
     expect(loadConfig(fixture({ providers: { author: { provider: "claude", sessionReuse: "never" } } })).providers.author.sessionReuse).toBe("never");
   });
+
+  it("validates the per-station specialist opt-in and local override", () => {
+    const root = fixture({ stations: { spec: { specialistsEnabled: true } } },
+      { stations: { spec: { specialistsEnabled: false }, verify: { specialistsEnabled: true } } });
+    expect(loadConfig(root).stations).toEqual({ spec: { specialistsEnabled: false }, verify: { specialistsEnabled: true } });
+    expect(() => loadConfig(fixture({ stations: { plan: { specialistsEnabled: true } } }))).toThrow(/only for spec, test-plan, and verify/);
+    expect(() => loadConfig(fixture({ stations: { spec: { specialistsEnabled: "true" } } }))).toThrow(/specialistsEnabled must be a boolean/);
+  });
+
+  it("validates and merges per-feature proposal assignments", () => {
+    const groups = [["src/one.ts"], ["src/two.ts"]];
+    const root = fixture({ stations: { implementation: { proposalGroups: { first: groups, second: groups } } } },
+      { stations: { implementation: { proposalGroups: { first: false } } } });
+    expect(loadConfig(root).stations.implementation?.proposalGroups).toEqual({ first: false, second: groups });
+    expect(() => loadConfig(fixture({ stations: { "unit-tests": { proposalGroups: { first: [["a"], ["a"]] } } } }))).toThrow(/disjoint/);
+    expect(() => loadConfig(fixture({ stations: { implementation: { proposalGroups: { first: [["a"]] } } } }))).toThrow(/two nonempty/);
+    expect(() => loadConfig(fixture({ stations: { verify: { proposalGroups: { first: groups } } } }))).toThrow(/only for unit-tests and implementation/);
+  });
 });

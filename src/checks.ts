@@ -3,7 +3,6 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
-  readdirSync,
   realpathSync,
   writeFileSync,
 } from "node:fs";
@@ -355,23 +354,24 @@ async function executeOne(
   const cwd =
     profile.cwd && profile.cwd !== "." ? safePath(root, profile.cwd) : root;
   mkdirSync(runDir, { recursive: true });
-  const evidenceFile = path.join(runDir, `check-${check.id}.json`);
+  const artifactPath = (kind: string) => path.join(runDir, `${kind}-${check.id}.json`);
+  const artifacts: string[] = [];
+  const writeArtifact = (kind: string, content: string) => {
+    const file = path.resolve(artifactPath(kind));
+    writeFileSync(file, content);
+    artifacts.push(file);
+  };
+  const evidenceFile = artifactPath("check");
   const reportFile = profile.args?.some((arg) => arg.includes("{reportFile}"))
-    ? path.resolve(runDir, `report-${check.id}.json`)
+    ? path.resolve(artifactPath("report"))
     : undefined;
   let reportHash: string | undefined;
   result.evidence = evidenceFile;
   const finish = () => {
     result.durationMs = performance.now() - started;
-    writeFileSync(evidenceFile, JSON.stringify(result, null, 2));
+    writeArtifact("check", JSON.stringify(result, null, 2));
     result.evidenceHashes = Object.fromEntries(
-      readdirSync(runDir)
-        .filter((file) => file.endsWith(`-${check.id}.json`) &&
-          path.resolve(runDir, file) !== reportFile)
-        .map((file) => {
-          const absolute = path.join(runDir, file);
-          return [absolute, hash(readFileSync(absolute))];
-        }),
+      artifacts.sort().map((file) => [file, hash(readFileSync(file))]),
     );
     if (reportFile && reportHash) result.evidenceHashes[reportFile] = reportHash;
     return result;
@@ -410,8 +410,8 @@ async function executeOne(
     result.observation = observation.observation;
     result.reason = observation.reason;
     // Embed content hashes/contents in the raw evidence so later edits cannot rewrite observations.
-    writeFileSync(
-      path.join(runDir, `manual-${check.id}.json`),
+    writeArtifact(
+      "manual",
       JSON.stringify(
         {
           ...observation,
@@ -457,8 +457,8 @@ async function executeOne(
       const setup =
         preparedSetup ??
         (await executeSetup({ root, cwd, profile, signal: input.signal }));
-      writeFileSync(
-        path.join(runDir, `setup-${check.id}.json`),
+      writeArtifact(
+        "setup",
         JSON.stringify({
           ...setup,
           sharedSetup: preparedSetup !== undefined,
@@ -489,10 +489,7 @@ async function executeOne(
         signal: input.signal,
         env: { ...profile.env, NODE_ENV: "test" },
       });
-      writeFileSync(
-        path.join(runDir, `build-${check.id}.json`),
-        JSON.stringify(build),
-      );
+      writeArtifact("build", JSON.stringify(build));
       if (build.code !== 0) {
         result.status = "failed";
         result.reason = "Candidate preview build failed.";
@@ -572,8 +569,8 @@ async function executeOne(
         KITCHEN_SOURCE_FINGERPRINT: fingerprint,
       },
     });
-    writeFileSync(
-      path.join(runDir, `raw-${check.id}.json`),
+    writeArtifact(
+      "raw",
       JSON.stringify(
         {
           ...execution,
@@ -676,52 +673,38 @@ export async function executeChecks(
         }),
       );
   }
+  const canonicalPath = (file: string) => {
+    const absolute = existsSync(file) ? realpathSync(file) : path.resolve(file);
+    return process.platform === "win32" ? absolute.toLowerCase() : absolute;
+  };
+  const scheduling = new Map<string, { profile: Profile; exclusive: boolean; resources: string[] }>();
+  for (const id of new Set(input.definitions.map((definition) => definition.profile))) {
+    const profile = input.profiles[id]!;
+    const exclusive = profile.parallelSafe !== true || ["browser", "manual"].includes(profile.kind);
+    const cwd =
+      profile.cwd && profile.cwd !== "."
+        ? safePath(input.root, profile.cwd)
+        : input.root;
+    const resources = [`path:${canonicalPath(cwd)}`];
+    if (profile.resourceGroup !== undefined)
+      resources.push(`group:${profile.resourceGroup}`);
+    if (profile.fixture)
+      resources.push(`path:${canonicalPath(safePath(input.root, profile.fixture))}`);
+    scheduling.set(id, { profile, exclusive, resources });
+  }
+  const scheduleAt = (index: number) => scheduling.get(input.definitions[index]!.profile)!;
   const pending = input.definitions.map((_, index) => index);
   const active = new Map<number, Promise<void>>();
   const groups = new Set<string>();
   let exclusiveActive = false;
   let failure: unknown;
-  const profileAt = (index: number) =>
-    input.profiles[input.definitions[index]!.profile]!;
-  const parallel = (index: number) => {
-    const profile = profileAt(index);
-    return (
-      profile.parallelSafe === true &&
-      !["browser", "manual"].includes(profile.kind)
-    );
-  };
-  const groupsAt = (index: number) => {
-    const profile = profileAt(index);
-    const directory =
-      profile.cwd && profile.cwd !== "."
-        ? safePath(input.root, profile.cwd)
-        : input.root;
-    const cwd = existsSync(directory)
-      ? realpathSync(directory)
-      : path.resolve(directory);
-    const canonical = (value: string) =>
-      process.platform === "win32" ? value.toLowerCase() : value;
-    const resources = [
-      profile.resourceGroup === undefined
-        ? `cwd:${canonical(cwd)}`
-        : `group:${profile.resourceGroup}`,
-    ];
-    if (profile.fixture) {
-      const fixture = safePath(input.root, profile.fixture);
-      resources.push(
-        `fixture:${canonical(existsSync(fixture) ? realpathSync(fixture) : fixture)}`,
-      );
-    }
-    return resources;
-  };
   const start = (index: number) => {
     const definition = input.definitions[index]!;
-    const resources = groupsAt(index);
-    const exclusive = !parallel(index);
+    const { profile, exclusive, resources } = scheduleAt(index);
     if (exclusive) exclusiveActive = true;
     for (const resource of resources) groups.add(resource);
     const execution = executeOne(
-      { ...input, definition, profile: profileAt(index) },
+      { ...input, definition, profile },
       setups.get(setupKeys.get(definition.profile) ?? ""),
     )
       .then((result) => {
@@ -744,13 +727,14 @@ export async function executeChecks(
     }
     if (exclusiveActive) {
       // Manual observations, browser builds and unopted-in profiles run alone.
-    } else if (pending.length && !parallel(pending[0]!)) {
+    } else if (pending.length && scheduleAt(pending[0]!).exclusive) {
       if (!active.size) start(pending.shift()!);
     } else {
       for (let position = 0; position < pending.length && active.size < 2; ) {
         const index = pending[position]!;
-        if (!parallel(index)) break;
-        if (groupsAt(index).some((resource) => groups.has(resource))) {
+        const { exclusive, resources } = scheduleAt(index);
+        if (exclusive) break;
+        if (resources.some((resource) => groups.has(resource))) {
           position++;
           continue;
         }

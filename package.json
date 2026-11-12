@@ -29,6 +29,8 @@
     "test:preflight": "node --import tsx scripts/test.ts preflight",
     "test:live": "node --import tsx scripts/test.ts live",
     "test:replay": "node --import tsx scripts/replay-station.ts",
+    "benchmark:qualify": "node --import tsx scripts/qualify-stations.ts",
+    "benchmark:review": "node --import tsx scripts/review-station-qualification.ts",
     "check:types": "tsc --noEmit",
     "lint": "oxlint -c .oxlintrc.json ."
   },

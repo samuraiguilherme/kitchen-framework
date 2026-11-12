@@ -1,14 +1,15 @@
 import { performance } from "node:perf_hooks";
 import type { RunMetrics } from "./types.ts";
-import { writeFileSync, renameSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
+import { replaceFileSync } from "./atomic-file.ts";
 
 const checkpoints = new WeakMap<RunMetrics, () => void>();
 export function persistMetrics(metrics: RunMetrics, directory: string): () => void {
   const save = () => {
     const file = path.join(directory, "metrics.json");
     writeFileSync(file + ".tmp", JSON.stringify(metrics, null, 2));
-    renameSync(file + ".tmp", file);
+    replaceFileSync(file + ".tmp", file);
   };
   checkpoints.set(metrics, save);
   save();
@@ -46,7 +47,7 @@ export function promptSections(prompt: string): Record<string, number> {
   let name = "instructions";
   for (const line of prompt.split(/(?<=\n)/)) {
     const heading =
-      /^(Human\/model conversation|Rubric|Station boundaries|Existing template|Context|Human revision request|KITCHEN OUTPUT CONTRACT|DOCUMENT [^\n]+|CHECK PROFILES|LOCAL RUN STATE|RUNNER PREPARATION|DISCOVERY|DIFF|UNTRACKED FILES)/.exec(
+      /^(Human\/model conversation|Rubric|Station boundaries|Existing template|Context|Human revision request|KITCHEN OUTPUT CONTRACT|DOCUMENT [^\n]+|CHECK PROFILES|LOCAL RUN STATE|RUNNER PREPARATION|DISCOVERY|SPECIALIST ANALYSIS|FILE PROPOSAL GROUP|DIFF|UNTRACKED FILES)/.exec(
         line,
       );
     if (heading) name = heading[1]!;

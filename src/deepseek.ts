@@ -251,7 +251,7 @@ export function prepareDeepSeek(
   const runDir = path.resolve(request.runDir);
   const home = request.session?.home ?? path.join(runDir, `${request.role}-dsh-home`);
   mkdirSync(home, { recursive: true });
-  const noTools = probe || request.station === "intent";
+  const noTools = probe || request.noTools === true || request.station === "intent";
   const allowTools = noTools ? [] : readTools;
   const maxTokens = outputTokens ?? generationLimit(request, probe);
   if (!Number.isSafeInteger(maxTokens) || maxTokens < 1 || maxTokens > options.maxTokens)
